@@ -1,0 +1,7 @@
+wxPython
+feedparser
+requests
+beautifulsoup4
+yt-dlp
+python-dateutil
+mutagen
