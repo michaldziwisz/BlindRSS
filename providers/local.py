@@ -10,6 +10,7 @@ from core.db import get_connection, init_db
 from core.discovery import discover_feed
 from core import utils
 from bs4 import BeautifulSoup as BS
+import xml.etree.ElementTree as ET
 import logging
 
 log = logging.getLogger(__name__)
@@ -314,7 +315,7 @@ class LocalProvider(RSSProvider):
                     # Try parsing with BS4
                     soup = None
                     try:
-                        soup = BeautifulSoup(content, 'xml')
+                        soup = BS(content, 'xml')
                         write_log("Parsed with 'xml' parser.")
                     except Exception as e:
                         write_log(f"XML parse failed: {e}")
@@ -322,7 +323,7 @@ class LocalProvider(RSSProvider):
                     if not soup or not soup.find('opml'):
                         # Fallback to html.parser if xml fails or doesn't find root
                         write_log("Fallback to 'html.parser'.")
-                        soup = BeautifulSoup(content, 'html.parser')
+                        soup = BS(content, 'html.parser')
 
                     # Find body
                     body = soup.find('body')
