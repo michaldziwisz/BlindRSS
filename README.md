@@ -7,7 +7,7 @@ A vibe coded accessible, modern RSS and Podcast player.
 *   **Fast:** Instant startup and parallel feed refreshing.
 *   **Podcast Player:** Supports chapters. Auto-downloads if streaming fails. Installs python and Yt-DLP for Podcast support
 *   **Tray Icon:** Minimizes to system tray. Right-click for media controls.
-*   **Smart Dates:** Fixes incorrect dates by reading titles 
+
 
 ## Keyboard Shortcuts
 
