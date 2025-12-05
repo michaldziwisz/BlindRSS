@@ -1,16 +1,36 @@
 import sqlite3
 import os
 import sys
+import logging
+
+log = logging.getLogger(__name__)
 
 if getattr(sys, 'frozen', False):
     APP_DIR = os.path.dirname(sys.executable)
 else:
-    APP_DIR = os.getcwd()
+    # Use project root (parent of this file's directory) instead of current working directory
+    APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DB_FILE = os.path.join(APP_DIR, "rss.db")
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    # Use a shorter timeout for the initial check/setup to avoid hanging
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    
+    # Enable WAL mode for better concurrency
+    try:
+        # Check current mode first
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode")
+        mode = cursor.fetchone()
+        if mode and mode[0].upper() != 'WAL':
+            # Only try to set if not already WAL, to minimize locking
+            conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;") 
+    except Exception as e:
+        # Non-fatal if we can't set WAL (e.g. locked), just log and continue
+        log.warning(f"Failed to set WAL mode: {e}")
+
     c = conn.cursor()
     
     c.execute('''CREATE TABLE IF NOT EXISTS feeds (
@@ -21,20 +41,65 @@ def init_db():
         icon_url TEXT
     )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS articles (
-        id TEXT PRIMARY KEY,
-        feed_id TEXT,
-        title TEXT,
-        url TEXT,
-        content TEXT,
-        date TEXT,
-        author TEXT,
-        is_read INTEGER DEFAULT 0,
-        media_url TEXT,
-        media_type TEXT,
-        FOREIGN KEY(feed_id) REFERENCES feeds(id)
-    )''')
+    # Check if articles table needs migration to composite primary key (id, feed_id)
+    c.execute("PRAGMA table_info(articles)")
+    columns = c.fetchall()
+    # columns: (cid, name, type, notnull, dflt_value, pk)
+    # Check if 'id' is PK and 'feed_id' is PK. 
+    # If composite, both should have pk > 0.
+    id_pk = False
+    feed_id_pk = False
+    table_exists = False
     
+    for col in columns:
+        table_exists = True
+        if col[1] == 'id' and col[5] > 0:
+            id_pk = True
+        if col[1] == 'feed_id' and col[5] > 0:
+            feed_id_pk = True
+            
+    if table_exists and id_pk and not feed_id_pk:
+        log.warning("Migrating articles table to composite primary key (id, feed_id).")
+        
+        c.execute("ALTER TABLE articles RENAME TO old_articles")
+        c.execute('''CREATE TABLE articles (
+            id TEXT,
+            feed_id TEXT,
+            title TEXT,
+            url TEXT,
+            content TEXT,
+            date TEXT,
+            author TEXT,
+            is_read INTEGER DEFAULT 0,
+            media_url TEXT,
+            media_type TEXT,
+            PRIMARY KEY (id, feed_id),
+            FOREIGN KEY(feed_id) REFERENCES feeds(id)
+        )''')
+        c.execute("INSERT OR IGNORE INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) SELECT id, feed_id, title, url, content, date, author, is_read, media_url, media_type FROM old_articles")
+        c.execute("DROP TABLE old_articles")
+        
+        # Clear feed cache to force full refresh and populate missing items
+        c.execute("UPDATE feeds SET etag=NULL, last_modified=NULL")
+        
+        log.info("Articles table migration complete.")
+    elif not table_exists: # Table doesn't exist, create with new schema
+        c.execute('''CREATE TABLE articles (
+            id TEXT,
+            feed_id TEXT,
+            title TEXT,
+            url TEXT,
+            content TEXT,
+            date TEXT,
+            author TEXT,
+            is_read INTEGER DEFAULT 0,
+            media_url TEXT,
+            media_type TEXT,
+            PRIMARY KEY (id, feed_id),
+            FOREIGN KEY(feed_id) REFERENCES feeds(id)
+        )''')
+    
+    # Re-create or create indexes (even if table was migrated)
     c.execute("CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_articles_is_read ON articles (is_read)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_articles_date ON articles (date)")
@@ -74,14 +139,21 @@ def init_db():
         pass
         
     # Seed categories from existing feeds if empty
-    c.execute("SELECT count(*) FROM categories")
-    if c.fetchone()[0] == 0:
-        c.execute("INSERT OR IGNORE INTO categories (id, title) SELECT lower(hex(randomblob(16))), category FROM feeds WHERE category IS NOT NULL AND category != ''")
-        # Ensure Uncategorized exists
-        c.execute("INSERT OR IGNORE INTO categories (id, title) VALUES (?, ?)", ("uncategorized", "Uncategorized"))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c.execute("SELECT count(*) FROM categories")
+        if c.fetchone()[0] == 0:
+            c.execute("INSERT OR IGNORE INTO categories (id, title) SELECT lower(hex(randomblob(16))), category FROM feeds WHERE category IS NOT NULL AND category != ''")
+            # Ensure Uncategorized exists
+            c.execute("INSERT OR IGNORE INTO categories (id, title) VALUES (?, ?)", ("uncategorized", "Uncategorized"))
+        
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e):
+            log.warning("DB locked during seed/migration commit. Skipping this time.")
+        else:
+            raise
+    finally:
+        conn.close()
 
 def get_connection():
-    return sqlite3.connect(DB_FILE)
+    return sqlite3.connect(DB_FILE, timeout=30.0)

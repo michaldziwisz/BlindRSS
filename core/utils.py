@@ -4,24 +4,27 @@ import uuid
 import logging
 import sqlite3
 from datetime import datetime, timezone, timedelta
+import email.utils
 from dateutil import parser as dateparser
 from io import BytesIO
 from core.db import get_connection
 
 log = logging.getLogger(__name__)
 
+# Default headers for network calls
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/rss+xml,application/xml,application/atom+xml,text/xml;q=0.9,*/*;q=0.8'
+    "User-Agent": "BlindRSS/1.0 (+https://github.com/)",
+    "Accept": "*/*",
 }
 
 def safe_requests_get(url, **kwargs):
-    """Wrapper for requests.get with default browser headers."""
-    headers = kwargs.pop("headers", {})
-    # Merge with defaults, preserving caller's headers if they exist
-    final_headers = HEADERS.copy()
-    final_headers.update(headers)
-    return requests.get(url, headers=final_headers, **kwargs)
+    """requests.get with default headers and sane timeouts."""
+    headers = kwargs.pop("headers", None) or {}
+    merged = HEADERS.copy()
+    merged.update(headers)
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 15
+    return requests.get(url, headers=merged, **kwargs)
 
 # --- Date Parsing ---
 
@@ -66,19 +69,26 @@ def extract_date_from_text(text: str):
         except Exception:
             pass
     # 3) Month name forms (e.g., May 17 2021)
-    try:
-        dt = dateparser.parse(text, fuzzy=True, default=datetime(1900, 1, 1))
-        if dt.year > 1900:
-            return dt
-    except Exception:
-        pass
+    # Clean up timezone abbreviations that confuse parser
+    clean_text = re.sub(r'\b(PST|PDT|EST|EDT|CST|CDT|MST|MDT|AI|GMT|UTC)\b', '', text, flags=re.IGNORECASE)
+    # Only attempt parsing if we see something that looks like a date (Month name)
+    # Simple heuristic: Check for month names
+    if re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', clean_text, re.IGNORECASE):
+        try:
+            dt = dateparser.parse(clean_text, fuzzy=True, default=datetime(1900, 1, 1))
+            if dt.year > 1900:
+                return dt
+        except Exception:
+            pass
     return None
 
-def normalize_date(raw_date_str: str, title: str = "", content: str = "", url: str = "") -> str:
+def normalize_date(raw_date_input: any, title: str = "", content: str = "", url: str = "") -> str:
     """
     Robust date normalizer.
     Prioritizes dates found explicitly in the Title or URL, as some feeds (e.g. archives) 
     put the original air date there while using a recent timestamp for pubDate.
+    
+    raw_date_input can be a string, a datetime object, or a time.struct_time.
     """
     now = datetime.now(timezone.utc)
     
@@ -87,30 +97,79 @@ def normalize_date(raw_date_str: str, title: str = "", content: str = "", url: s
         if dt.tzinfo:
             dt_cmp = dt.astimezone(timezone.utc)
         else:
+            # Assume UTC if naive, unless logic dictates otherwise. 
             dt_cmp = dt.replace(tzinfo=timezone.utc)
-        # discard if more than 2 days in future (some timezones are ahead)
-        return (dt_cmp - now) <= timedelta(days=2)
+        
+        # Allow modest future skew (e.g., scheduled posts) but not far future release dates.
+        return (dt_cmp - now) <= timedelta(days=180) and dt_cmp.year > 1990
 
-    # 1) Check Title first (highest priority for archives)
+    def parse_unix_timestamp(val):
+        """Handle Unix timestamps (seconds or milliseconds)."""
+        try:
+            if isinstance(val, (int, float)):
+                ts = float(val)
+            elif isinstance(val, str):
+                stripped = val.strip()
+                if not re.fullmatch(r"-?\d+(?:\.\d+)?", stripped):
+                    return None
+                ts = float(stripped)
+            else:
+                return None
+
+            # Heuristic: values above 1e12 are likely milliseconds
+            if abs(ts) > 1e12:
+                ts = ts / 1000.0
+
+            dt = datetime.fromtimestamp(ts, timezone.utc)
+            return dt if valid(dt) else None
+        except Exception:
+            return None
+
+    # 0) Handle pre-parsed objects
+    if isinstance(raw_date_input, datetime):
+        if valid(raw_date_input): return format_datetime(raw_date_input)
+    elif hasattr(raw_date_input, 'tm_year'): # struct_time
+        try:
+            dt = datetime(*raw_date_input[:6], tzinfo=timezone.utc)
+            if valid(dt): return format_datetime(dt)
+        except: pass
+
+    # 0b) Unix timestamp strings/ints (used by some APIs like Inoreader/BazQux)
+    ts_dt = parse_unix_timestamp(raw_date_input)
+    if ts_dt:
+        return format_datetime(ts_dt)
+
+    # 1) Prefer explicit feed/pub dates first
+    raw_date_str = str(raw_date_input) if raw_date_input else ""
+    if raw_date_str:
+        # Try RFC 2822 (Standard RSS) first using email.utils
+        try:
+            dt = email.utils.parsedate_to_datetime(raw_date_str)
+            if valid(dt): return format_datetime(dt)
+        except Exception:
+            pass
+            
+        # Try dateutil fallback (handles ISO-8601 and others)
+        try:
+            # Handle common TZ abbrevs specifically for dateutil
+            tzinfos = {"PST": -28800, "PDT": -25200, "EST": -18000, "EDT": -14400, "CST": -21600, "CDT": -18000, "MST": -25200, "MDT": -21600}
+            dt = dateparser.parse(raw_date_str, tzinfos=tzinfos)
+            if valid(dt):
+                return format_datetime(dt)
+        except Exception:
+            pass
+
+    # 2) Title-derived dates (useful for archives but can contain release dates)
     if title:
         dt = extract_date_from_text(title)
         if dt and valid(dt):
             return format_datetime(dt)
 
-    # 2) Check URL
+    # 3) URL-derived dates
     if url:
         dt = extract_date_from_text(url)
         if dt and valid(dt):
             return format_datetime(dt)
-
-    # 3) Check raw feed date
-    if raw_date_str:
-        try:
-            dt = dateparser.parse(raw_date_str)
-            if valid(dt):
-                return format_datetime(dt)
-        except Exception:
-            pass
 
     # 4) Check content
     if content:
@@ -196,7 +255,7 @@ def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None
             log.warning(f"Chapter fetch failed for {chapter_url}: {e}")
 
     # 2) ID3 CHAP frames if audio
-    if media_url and media_type and (media_type.startswith("audio/") or "podcast" in media_type or media_url.endswith("mp3")):
+    if media_url and media_type and (media_type.startswith("audio/") or "podcast" in media_type or media_url.lower().split("?")[0].endswith("mp3")):
         try:
             from mutagen.id3 import ID3
             # Fetch first 2MB (usually enough for ID3v2 header)
@@ -226,6 +285,6 @@ def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None
         except ImportError:
             log.info("mutagen not installed, skipping ID3 chapter parse.")
         except Exception as e:
-            log.info(f"ID3 chapter parse failed for {media_url}: {e}")
+            log.debug(f"ID3 chapter parse failed for {media_url}: {e}")
 
     return chapters_out
