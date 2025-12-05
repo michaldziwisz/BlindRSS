@@ -171,4 +171,20 @@ def init_db():
         conn.close()
 
 def get_connection():
-    return sqlite3.connect(DB_FILE, timeout=30.0)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0, check_same_thread=False)
+    try:
+        conn.execute("PRAGMA busy_timeout=8000;")
+    except Exception:
+        pass
+    return conn
+
+def has_articles() -> bool:
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM articles")
+        count = c.fetchone()[0] or 0
+        conn.close()
+        return count > 0
+    except Exception:
+        return False

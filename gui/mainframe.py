@@ -14,6 +14,7 @@ from .dialogs import AddFeedDialog, SettingsDialog
 from .player import PlayerFrame
 from .tray import BlindRSSTrayIcon
 from providers.base import RSSProvider
+from core import db as db_core
 
 class MainFrame(wx.Frame):
     def __init__(self, provider: RSSProvider, config_manager):
@@ -47,6 +48,9 @@ class MainFrame(wx.Frame):
         self.stop_event = threading.Event()
         self.refresh_thread = threading.Thread(target=self.refresh_loop, daemon=True)
         self.refresh_thread.start()
+
+        # If this is a fresh install (no articles yet), trigger an immediate blocking sync once
+        threading.Thread(target=self._initial_sync_if_empty, daemon=True).start()
 
     def init_ui(self):
         # Main Splitter: Tree vs Content Area
@@ -139,6 +143,22 @@ class MainFrame(wx.Frame):
             return text.strip()
         except:
             return html_content
+
+    def _initial_sync_if_empty(self):
+        """
+        For new users (empty DB), run one immediate refresh so the first view isn't blank.
+        """
+        try:
+            if db_core.has_articles():
+                return
+            # Run provider refresh once synchronously
+            try:
+                self.provider.refresh()
+            except Exception as e:
+                print(f"Initial sync error: {e}")
+            wx.CallAfter(self.refresh_feeds)
+        except Exception:
+            pass
 
     def _format_display_date(self, date_str: str) -> str:
         """
