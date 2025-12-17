@@ -92,6 +92,11 @@ class LocalProviderParallelTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_cwd = os.getcwd()
         os.chdir(self.tmp.name)
+        
+        # Patch DB location to use the temp dir
+        import core.db
+        self.orig_db_file = core.db.DB_FILE
+        core.db.DB_FILE = os.path.join(self.tmp.name, "rss.db")
 
         self.httpd, self.http_thread, self.port = start_test_server()
 
@@ -132,6 +137,10 @@ class LocalProviderParallelTests(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.http_thread.join(timeout=1)
+        
+        import core.db
+        core.db.DB_FILE = self.orig_db_file
+        
         os.chdir(self.old_cwd)
         self.tmp.cleanup()
 

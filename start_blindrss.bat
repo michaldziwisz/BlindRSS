@@ -8,15 +8,15 @@ echo Checking system...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [!] Python not found. Attempting install...
-    winget install -e --id Python.Python.3.13 --scope machine
+    :: Added agreement flags for silent install
+    winget install -e --id Python.Python.3.13 --scope machine --accept-package-agreements --accept-source-agreements
     if %errorlevel% neq 0 (
         echo [X] Failed to install Python. Please install manually.
         pause
         exit /b 1
     )
-    echo [+] Python installed. Restarting script...
-    endlocal
-    %0
+    echo [+] Python installed. Please restart this script to initialize environment.
+    pause
     exit /b
 )
 
@@ -28,6 +28,12 @@ if %errorlevel% neq 0 (
 )
 
 :: 3. Run Application
-:: main.py contains internal dependency checks (invisible)
 echo Starting BlindRSS...
 python main.py
+
+:: 4. Pause on crash
+if %errorlevel% neq 0 (
+    echo.
+    echo [!] Application crashed or exited with error level %errorlevel%
+    pause
+)

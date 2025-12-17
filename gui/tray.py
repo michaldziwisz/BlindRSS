@@ -115,7 +115,7 @@ class BlindRSSTrayIcon(wx.adv.TaskBarIcon):
         pw = getattr(self.frame, "player_window", None)
         if pw:
             try:
-                pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 30000)))
+                pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000)))
             except Exception:
                 pass
 

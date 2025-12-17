@@ -1,7 +1,54 @@
 import wx
+import copy
 from urllib.parse import urlparse
 from core.discovery import discover_feed
 from core import utils
+from core.casting import CastingManager
+
+
+class CastDialog(wx.Dialog):
+    def __init__(self, parent, casting_manager: CastingManager):
+        super().__init__(parent, title="Select Casting Device", size=(400, 300))
+
+        self.casting_manager = casting_manager
+        self.selected_device = None
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        sizer.Add(wx.StaticText(self, label="Select a device to cast to:"), 0, wx.ALL, 5)
+
+        self.device_list = wx.ListBox(self, size=(380, 200))
+        self.device_list.Bind(wx.EVT_LISTBOX_DCLICK, self.on_ok)
+        sizer.Add(self.device_list, 1, wx.EXPAND | wx.ALL, 5)
+
+        btn_sizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
+        sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
+        self.SetSizer(sizer)
+        self.Centre()
+
+        self.load_devices()
+
+    def load_devices(self):
+        try:
+            print("DEBUG: Discovering devices...")
+            devices = self.casting_manager.discover_devices()
+            print(f"DEBUG: Found {len(devices)} devices: {[d.name for d in devices]}")
+            self.device_list.Clear()
+            for device in devices:
+                print(f"DEBUG: Device: {device.name} type: {device.type} host: {device.host}")
+                self.device_list.Append(f"{device.name} ({device.type})", device)
+        except Exception as e:
+            print(f"DEBUG: Discovery failed: {e}")
+            wx.MessageBox(f"Failed to discover devices: {e}", "Error", wx.ICON_ERROR)
+
+    def on_ok(self, event):
+        idx = self.device_list.GetSelection()
+        if idx != wx.NOT_FOUND:
+            self.selected_device = self.device_list.GetClientData(idx)
+            self.EndModal(wx.ID_OK)
+        else:
+            wx.MessageBox("Please select a device.", "Error", wx.ICON_ERROR)
 
 
 class AddFeedDialog(wx.Dialog):
@@ -161,15 +208,70 @@ class SettingsDialog(wx.Dialog):
         # Provider Tab
         provider_panel = wx.Panel(notebook)
         provider_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         provider_sizer.Add(wx.StaticText(provider_panel, label="Active Provider:"), 0, wx.ALL, 5)
-        self.provider_choice = wx.Choice(provider_panel, choices=["local", "miniflux", "bazqux", "theoldreader", "inoreader"])
+
+        # Build provider list from config (keeps future providers visible).
+        cfg_providers = list((config.get("providers") or {}).keys()) if isinstance(config, dict) else []
+        if not cfg_providers:
+            cfg_providers = ["local", "miniflux", "bazqux", "theoldreader", "inoreader"]
+        preferred_order = ["local", "miniflux", "bazqux", "theoldreader", "inoreader"]
+        providers_sorted = [p for p in preferred_order if p in cfg_providers] + [p for p in cfg_providers if p not in preferred_order]
+
+        self.provider_choice = wx.Choice(provider_panel, choices=providers_sorted)
         self.provider_choice.SetStringSelection(config.get("active_provider", "local"))
         provider_sizer.Add(self.provider_choice, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Provider Configs (Simplified for now - just edit the JSON directly or add fields here)
-        provider_sizer.Add(wx.StaticText(provider_panel, label="Note: Configure specific provider credentials in config.json"), 0, wx.ALL, 5)
-        
+
+        # Provider-specific settings panels
+        self._provider_panels = {}  # name -> (panel, controls_dict)
+
+        def _add_simple_info_panel(name: str, info_text: str):
+            pnl = wx.Panel(provider_panel)
+            s = wx.BoxSizer(wx.VERTICAL)
+            s.Add(wx.StaticText(pnl, label=info_text), 0, wx.ALL, 5)
+            pnl.SetSizer(s)
+            provider_sizer.Add(pnl, 0, wx.EXPAND | wx.ALL, 5)
+            self._provider_panels[name] = (pnl, {})
+            pnl.Hide()
+
+        def _add_fields_panel(name: str, fields):
+            # fields: [(label, key, style)]
+            pnl = wx.Panel(provider_panel)
+            fg = wx.FlexGridSizer(cols=2, hgap=8, vgap=8)
+            fg.AddGrowableCol(1, 1)
+            ctrls = {}
+            p_cfg = (config.get("providers") or {}).get(name, {}) if isinstance(config, dict) else {}
+            for label, key, style in fields:
+                fg.Add(wx.StaticText(pnl, label=label), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 2)
+                tc = wx.TextCtrl(pnl, style=style)
+                tc.SetValue(str(p_cfg.get(key, "") or ""))
+                fg.Add(tc, 1, wx.EXPAND | wx.ALL, 2)
+                ctrls[key] = tc
+            pnl.SetSizer(fg)
+            provider_sizer.Add(pnl, 0, wx.EXPAND | wx.ALL, 5)
+            self._provider_panels[name] = (pnl, ctrls)
+            pnl.Hide()
+
+        _add_simple_info_panel("local", "Local provider uses the feeds you add inside the app (Add Feed / Import OPML).")
+        _add_fields_panel("miniflux", [
+            ("Miniflux URL:", "url", 0),
+            ("Miniflux API Key:", "api_key", 0),
+        ])
+        _add_fields_panel("theoldreader", [
+            ("The Old Reader Email:", "email", 0),
+            ("The Old Reader Password:", "password", wx.TE_PASSWORD),
+        ])
+        _add_fields_panel("inoreader", [
+            ("Inoreader Token:", "token", 0),
+        ])
+        _add_fields_panel("bazqux", [
+            ("BazQux Email:", "email", 0),
+            ("BazQux Password:", "password", wx.TE_PASSWORD),
+        ])
+
+        self.provider_choice.Bind(wx.EVT_CHOICE, self.on_provider_choice)
+        self._update_provider_panels()
+
         provider_panel.SetSizer(provider_sizer)
         notebook.AddPage(provider_panel, "Provider")
         
@@ -182,6 +284,26 @@ class SettingsDialog(wx.Dialog):
         
         self.SetSizer(main_sizer)
         self.Centre()
+
+    def on_provider_choice(self, event):
+        self._update_provider_panels()
+
+    def _update_provider_panels(self):
+        try:
+            sel = self.provider_choice.GetStringSelection()
+        except Exception:
+            sel = "local"
+        for name, (pnl, _ctrls) in getattr(self, "_provider_panels", {}).items():
+            try:
+                pnl.Show(name == sel)
+            except Exception:
+                pass
+        try:
+            # Refresh layout so controls become reachable in tab order immediately.
+            self.Layout()
+            self.FitInside() if hasattr(self, "FitInside") else None
+        except Exception:
+            pass
 
     def on_browse_dl_path(self, event):
         dlg = wx.DirDialog(self, "Choose download directory", self.dl_path_ctrl.GetValue(), style=wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
@@ -197,6 +319,26 @@ class SettingsDialog(wx.Dialog):
         except ValueError:
             speed = 1.0
             
+        providers = {}
+        try:
+            providers = copy.deepcopy(self.config.get("providers", {})) if isinstance(self.config, dict) else {}
+        except Exception:
+            providers = {}
+
+        # Collect provider settings from UI controls (preserves existing keys like local feeds).
+        for name, (_pnl, ctrls) in getattr(self, "_provider_panels", {}).items():
+            if not ctrls:
+                continue
+            p_cfg = providers.get(name, {})
+            if not isinstance(p_cfg, dict):
+                p_cfg = {}
+            for key, tc in ctrls.items():
+                try:
+                    p_cfg[key] = (tc.GetValue() or "").strip()
+                except Exception:
+                    p_cfg[key] = ""
+            providers[name] = p_cfg
+
         return {
             "refresh_interval": self.refresh_ctrl.GetValue(),
             "max_concurrent_refreshes": self.concurrent_ctrl.GetValue(),
@@ -213,7 +355,8 @@ class SettingsDialog(wx.Dialog):
             "download_retention": self.retention_ctrl.GetValue(),
             "close_to_tray": self.close_tray_chk.GetValue(),
             "minimize_to_tray": self.min_tray_chk.GetValue(),
-            "active_provider": self.provider_choice.GetStringSelection()
+            "active_provider": self.provider_choice.GetStringSelection(),
+            "providers": providers,
         }
 
 

@@ -25,8 +25,19 @@ if __name__ == "__main__":
 
         def FilterEvent(self, event):
             try:
-                if isinstance(event, wx.KeyEvent) and event.ControlDown():
-                    key = event.GetKeyCode()
+                if not isinstance(event, wx.KeyEvent):
+                    return wx.EventFilter.Event_Skip
+
+                # Only react to key-down/char events. Handling KEY_UP can cause double-seeks.
+                try:
+                    et = int(event.GetEventType())
+                except Exception:
+                    et = -1
+                if et not in (getattr(wx, 'wxEVT_KEY_DOWN', -1), getattr(wx, 'wxEVT_CHAR_HOOK', -1), getattr(wx, 'wxEVT_CHAR', -1)):
+                    return wx.EventFilter.Event_Skip
+
+                if event.ControlDown():
+                    key = int(event.GetKeyCode())
 
                     # Ctrl+P: toggle player window
                     if key in (ord('P'), ord('p')):
@@ -38,21 +49,17 @@ if __name__ == "__main__":
 
                     pw = getattr(self.frame, "player_window", None)
                     if pw:
-                        # Volume keys should work even before a track is loaded.
-                        if key == wx.WXK_UP:
-                            pw.adjust_volume(int(getattr(pw, "volume_step", 5)))
-                            return wx.EventFilter.Event_Processed
-                        if key == wx.WXK_DOWN:
-                            pw.adjust_volume(-int(getattr(pw, "volume_step", 5)))
-                            return wx.EventFilter.Event_Processed
-
-                        # Seek only makes sense when media is loaded.
-                        if getattr(pw, "has_media_loaded", lambda: False)():
-                            if key == wx.WXK_LEFT:
-                                pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000)))
-                                return wx.EventFilter.Event_Processed
-                            if key == wx.WXK_RIGHT:
-                                pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 30000)))
+                        # Use the same hold-to-repeat gate everywhere to avoid multi-seek bursts.
+                        hk = getattr(self.frame, "_media_hotkeys", None)
+                        if hk is not None:
+                            actions = {
+                                wx.WXK_UP: lambda: pw.adjust_volume(int(getattr(pw, "volume_step", 5))),
+                                wx.WXK_DOWN: lambda: pw.adjust_volume(-int(getattr(pw, "volume_step", 5))),
+                            }
+                            if getattr(pw, "has_media_loaded", lambda: False)():
+                                actions[wx.WXK_LEFT] = lambda: pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000)))
+                                actions[wx.WXK_RIGHT] = lambda: pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000)))
+                            if hk.handle_ctrl_key(event, actions):
                                 return wx.EventFilter.Event_Processed
             except Exception:
                 pass

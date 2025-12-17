@@ -10,6 +10,7 @@ from dateutil.parser import UnknownTimezoneWarning
 from io import BytesIO
 from core.db import get_connection
 import warnings
+import urllib.parse
 
 log = logging.getLogger(__name__)
 
@@ -197,16 +198,24 @@ def parse_datetime_utc(value: str):
         return None
 
     dt = None
+    # Optimize: Try fast standard parsing first (DB uses this format)
     try:
-        dt = dateparser.parse(value, tzinfos=TZINFOS)
-    except Exception:
-        dt = None
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        try:
+            # Fallback for older python or slightly different formats
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
 
     if not dt:
         try:
-            dt = datetime.fromisoformat(value)
+            dt = dateparser.parse(value, tzinfos=TZINFOS)
         except Exception:
-            return None
+            dt = None
+
+    if not dt:
+        return None
 
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -464,3 +473,47 @@ def write_opml(feeds: list, path: str):
     except Exception as e:
         log.error(f"OPML Write Error: {e}")
         return False
+
+def resolve_final_url(url: str, max_redirects: int = 30, timeout_s: float = 15.0, user_agent: str | None = None) -> str:
+    """Resolve tracking/redirect URLs to a final URL that VLC can open reliably.
+
+    This performs an HTTP GET with redirects enabled and then closes the response immediately.
+    """
+    if not isinstance(url, str):
+        return url
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return url
+
+    ua = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    try:
+        s = requests.Session()
+        s.max_redirects = int(max_redirects) if int(max_redirects) > 0 else 30
+        # GET (not HEAD): many trackers/hosts behave differently for HEAD and can loop.
+        r = s.get(url, allow_redirects=True, timeout=timeout_s, headers={"User-Agent": ua}, stream=True)
+        # Consume nothing; just close the socket.
+        final = r.url or url
+        try:
+            r.close()
+        except Exception:
+            pass
+        return final
+    except Exception:
+        return url
+
+
+def normalize_url_for_vlc(url: str) -> str:
+    """Ensure URL is safely encoded for VLC (avoid unescaped spaces, etc.)."""
+    if not isinstance(url, str):
+        return url
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+        # Keep reserved characters, but encode spaces and other unsafe chars.
+        path = urllib.parse.quote(parts.path, safe="/:@-._~!$&'()*+,;=")
+        query = urllib.parse.quote_plus(parts.query, safe="=&:@-._~!$&'()*+,;/%")
+        frag = urllib.parse.quote(parts.fragment, safe="")
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, frag))
+    except Exception:
+        return url

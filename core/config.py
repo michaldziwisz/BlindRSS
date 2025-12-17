@@ -13,30 +13,38 @@ else:
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
+    "max_downloads": 32,
+    "auto_download_podcasts": False,
+    "auto_download_period": "unlimited",
     "refresh_interval": 300,  # seconds
-    "max_concurrent_refreshes": 12,
-    "per_host_max_connections": 3,
+    "max_concurrent_refreshes": 50,
+    "per_host_max_connections": 32,
     "feed_timeout_seconds": 15,
-    "feed_retry_attempts": 1,
+    "feed_retry_attempts": 5,
     "active_provider": "local",
-    "skip_silence": False,
-    "close_to_tray": False,
+    "skip_silence": True,
+    "close_to_tray": True,
     "minimize_to_tray": True,
     "max_cached_views": 15,
     "playback_speed": 1.0,
     "volume": 100,
     "volume_step": 5,
     "seek_back_ms": 10000,
-    "seek_forward_ms": 30000,
-    "show_player_on_play": True,
-    "vlc_network_caching_ms": 5000,
-    "range_cache_enabled": True,
-    "range_cache_prefetch_kb": 16384,  # per seek/read; larger reduces round-trips on high latency
-    "range_cache_inline_window_kb": 1024,  # max bytes served per VLC request; smaller = lower seek latency
-    "range_cache_hosts": ["promodj.com"],
+    "seek_forward_ms": 10000,
+    "show_player_on_play": False,
+    "vlc_network_caching_ms": 1000,
+    "vlc_local_proxy_network_caching_ms": 1000,  # keep VLC buffering low for local range-cache proxy
+    "vlc_local_proxy_file_caching_ms": 1000,  # keep VLC buffering low for local range-cache proxy
+    "range_cache_enabled": False,
+    "range_cache_apply_all_hosts": True,  # apply local range-cache proxy to all HTTP(S) hosts
+    "range_cache_initial_burst_kb": 131072,  # initial background burst (KB)
+    "range_cache_initial_inline_prefetch_kb": 16384,  # small inline prefetch cushion per seek/read (KB)
+    "range_cache_prefetch_kb": 32768,  # per seek/read; larger reduces round-trips on high latency
+    "range_cache_inline_window_kb": 4096,  # max bytes served per VLC request; smaller = lower seek latency
+    "range_cache_hosts": [],  # allowlist when range_cache_apply_all_hosts is False
     "range_cache_dir": "",  # empty => use OS temp directory
-    "range_cache_background_download": True,  # download ahead in background to make later seeks faster
-    "range_cache_background_chunk_kb": 8192,  # chunk size for background download
+    "range_cache_background_download": False,  # download ahead in background to make later seeks faster
+    "range_cache_background_chunk_kb": 16384,  # chunk size for background download
     "downloads_enabled": False,
     "download_path": os.path.join(APP_DIR, "podcasts"),
     "download_retention": "Unlimited",

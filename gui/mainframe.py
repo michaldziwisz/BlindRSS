@@ -11,9 +11,11 @@ from bs4 import BeautifulSoup
 from .dialogs import AddFeedDialog, SettingsDialog
 from .player import PlayerFrame
 from .tray import BlindRSSTrayIcon
+from .hotkeys import HoldRepeatHotkeys
 from providers.base import RSSProvider
 from core.config import APP_DIR
 from core import utils
+from core import article_extractor
 
 
 class MainFrame(wx.Frame):
@@ -35,6 +37,9 @@ class MainFrame(wx.Frame):
         
         # Create independent player window
         self.player_window = PlayerFrame(self, config_manager)
+
+        # Custom hold-to-repeat for media keys (prevents multi-seek on quick tap)
+        self._media_hotkeys = HoldRepeatHotkeys(self, hold_delay_s=2.0, repeat_interval_s=0.12, poll_interval_ms=15)
         
         self.init_ui()
         self.init_menus()
@@ -85,7 +90,30 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_LIST_ITEM_SELECTED, self.on_article_select, self.list_ctrl)
         self.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_article_activate, self.list_ctrl)
         self.Bind(wx.EVT_CONTEXT_MENU, self.on_list_context_menu, self.list_ctrl)
-        
+
+        # When tabbing into the content field, load full article text.
+        self.content_ctrl.Bind(wx.EVT_SET_FOCUS, self.on_content_focus)
+
+        # Full-text extraction cache (url -> rendered text)
+        self._fulltext_cache = {}
+        self._fulltext_token = 0
+        self._fulltext_loading_url = None
+        # Debounce full-text extraction when moving through the list quickly.
+        self._fulltext_debounce = None
+        self._fulltext_debounce_ms = 350
+
+        # Single-worker background thread for full-text extraction (keeps CPU usage predictable).
+        self._fulltext_worker_lock = threading.Lock()
+        self._fulltext_worker_event = threading.Event()
+        self._fulltext_worker_request = None
+        self._fulltext_worker_stop = False
+        self._fulltext_worker_thread = threading.Thread(target=self._fulltext_worker_loop, daemon=True)
+        self._fulltext_worker_thread.start()
+
+        # Debounce chapter loading too (selection changes can be rapid).
+        self._chapters_debounce = None
+        self._chapters_debounce_ms = 500
+
         # Store article objects for the list
         self.current_articles = []
 
@@ -296,20 +324,24 @@ class MainFrame(wx.Frame):
         exit_item = file_menu.Append(wx.ID_EXIT, "E&xit", "Exit application")
         
         view_menu = wx.Menu()
-        player_item = view_menu.Append(wx.ID_ANY, "Show/Hide &Player\tCtrl+P", "Show or hide the media player window")
+        # Ctrl+P is handled globally (see main.py GlobalMediaKeyFilter). Do not make it a menu accelerator.
+        player_item = view_menu.Append(wx.ID_ANY, "Show/Hide &Player (Ctrl+P)", "Show or hide the media player window")
 
         # Player menu (media controls)
         player_menu = wx.Menu()
-        player_toggle_item = player_menu.Append(wx.ID_ANY, "Show/Hide Player\tCtrl+P", "Show or hide the media player window")
+        player_toggle_item = player_menu.Append(wx.ID_ANY, "Show/Hide Player (Ctrl+P)", "Show or hide the media player window")
         player_menu.AppendSeparator()
         player_play_pause_item = player_menu.Append(wx.ID_ANY, "Play/Pause", "Toggle play/pause")
         player_stop_item = player_menu.Append(wx.ID_ANY, "Stop", "Stop playback")
         player_menu.AppendSeparator()
-        player_rewind_item = player_menu.Append(wx.ID_ANY, "Rewind\tCtrl+Left", "Rewind")
-        player_forward_item = player_menu.Append(wx.ID_ANY, "Fast Forward\tCtrl+Right", "Fast forward")
+        # NOTE: Do not use '\tCtrl+...' menu accelerators here.
+        # We implement Ctrl+Arrow globally via an event filter + hold-to-repeat gate.
+        # Leaving these as accelerators causes double-seeks (EVT_MENU + key handlers).
+        player_rewind_item = player_menu.Append(wx.ID_ANY, "Rewind (Ctrl+Left)", "Rewind")
+        player_forward_item = player_menu.Append(wx.ID_ANY, "Fast Forward (Ctrl+Right)", "Fast forward")
         player_menu.AppendSeparator()
-        player_vol_up_item = player_menu.Append(wx.ID_ANY, "Volume Up\tCtrl+Up", "Increase volume")
-        player_vol_down_item = player_menu.Append(wx.ID_ANY, "Volume Down\tCtrl+Down", "Decrease volume")
+        player_vol_up_item = player_menu.Append(wx.ID_ANY, "Volume Up (Ctrl+Up)", "Increase volume")
+        player_vol_down_item = player_menu.Append(wx.ID_ANY, "Volume Down (Ctrl+Down)", "Decrease volume")
         
         tools_menu = wx.Menu()
         settings_item = tools_menu.Append(wx.ID_PREFERENCES, "&Settings...", "Configure application")
@@ -356,19 +388,18 @@ class MainFrame(wx.Frame):
         if event.ControlDown():
             pw = getattr(self, "player_window", None)
             if pw and getattr(pw, "has_media_loaded", None) and pw.has_media_loaded():
-                key = event.GetKeyCode()
-                if key == wx.WXK_UP:
-                    pw.adjust_volume(int(getattr(pw, "volume_step", 5)))
-                    return
-                if key == wx.WXK_DOWN:
-                    pw.adjust_volume(-int(getattr(pw, "volume_step", 5)))
-                    return
-                if key == wx.WXK_LEFT:
-                    pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000)))
-                    return
-                if key == wx.WXK_RIGHT:
-                    pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 30000)))
-                    return
+                actions = {
+                    wx.WXK_UP: lambda: pw.adjust_volume(int(getattr(pw, "volume_step", 5))),
+                    wx.WXK_DOWN: lambda: pw.adjust_volume(-int(getattr(pw, "volume_step", 5))),
+                    wx.WXK_LEFT: lambda: pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000))),
+                    wx.WXK_RIGHT: lambda: pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000))),
+                }
+                try:
+                    if getattr(self, "_media_hotkeys", None) and self._media_hotkeys.handle_ctrl_key(event, actions):
+                        return
+                except Exception:
+                    # Fall back to default behavior below
+                    pass
         event.Skip()
 
     # -----------------------------------------------------------------
@@ -403,7 +434,7 @@ class MainFrame(wx.Frame):
         pw = getattr(self, "player_window", None)
         if pw:
             try:
-                pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 30000)))
+                pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000)))
             except Exception:
                 pass
 
@@ -447,8 +478,19 @@ class MainFrame(wx.Frame):
         # Close player window cleanly
         if self.player_window:
             self.player_window.Destroy()
+        try:
+            if getattr(self, "_media_hotkeys", None):
+                self._media_hotkeys.stop()
+        except Exception:
+            pass
         if self.tray_icon:
             self.tray_icon.Destroy()
+        try:
+            self._fulltext_worker_stop = True
+            self._fulltext_worker_event.set()
+        except Exception:
+            pass
+
         self.stop_event.set()
         if self.refresh_thread.is_alive():
             self.refresh_thread.join(timeout=1)
@@ -628,7 +670,7 @@ class MainFrame(wx.Frame):
             all_cats = self.provider.get_categories()
             wx.CallAfter(self._update_tree, feeds, all_cats)
         except Exception as e:
-            print(f"Error fetching feeds: {e}")
+            wx.MessageBox(f"Error fetching feeds: {e}", "Error", wx.ICON_ERROR)
 
     def _on_feed_refresh_progress(self, state):
         # Called from worker threads inside provider.refresh; marshal to UI thread
@@ -1099,27 +1141,326 @@ class MainFrame(wx.Frame):
         if 0 <= idx < len(self.current_articles):
             article = self.current_articles[idx]
             self.selected_article_id = article.id # Track selection
+            # Reset full-text state for new selection
+            self._fulltext_loading_url = None
+            self._fulltext_token += 1
             
-            # Prepare content
-            header = f"Title: {article.title}\n"
-            header += f"Date: {utils.humanize_article_date(article.date)}\n"
-            header += f"Author: {article.author}\n"
-            header += f"Link: {article.url}\n"
-            header += "-" * 40 + "\n\n"
-            
+            # Immediate feedback (fast)
+            self.content_ctrl.SetValue("Loading...")
+
+            # Debounce heavy operations (HTML parsing, marking read, etc.)
+            if getattr(self, "_content_debounce", None):
+                self._content_debounce.Stop()
+            self._content_debounce = wx.CallLater(150, self._update_content_view, idx)
+
+    def _update_content_view(self, idx):
+        if idx < 0 or idx >= len(self.current_articles):
+            return
+        article = self.current_articles[idx]
+        
+        # Verify selection hasn't changed
+        if getattr(self, "selected_article_id", None) != article.id:
+            return
+
+        # Prepare content (Heavy: BeautifulSoup)
+        header = f"Title: {article.title}\n"
+        header += f"Date: {utils.humanize_article_date(article.date)}\n"
+        header += f"Author: {article.author}\n"
+        header += f"Link: {article.url}\n"
+        header += "-" * 40 + "\n\n"
+        
+        try:
             content = self._strip_html(article.content)
             full_text = header + content
-            
             self.content_ctrl.SetValue(full_text)
-            
-            # Mark read in background
-            if not article.is_read:
-                threading.Thread(target=self.provider.mark_read, args=(article.id,), daemon=True).start()
-                article.is_read = True
-            
-            # Fetch chapters in background to avoid UI lag
-            threading.Thread(target=self._load_chapters_thread, args=(article,), daemon=True).start()
+        except Exception:
+            pass
+        
+        # Mark read in background
+        if not article.is_read:
+            threading.Thread(target=self.provider.mark_read, args=(article.id,), daemon=True).start()
+            article.is_read = True
+        
+        # Schedule full-text extraction
+        try:
+            self._schedule_fulltext_load_for_index(idx, force=False)
+        except Exception:
+            pass
 
+        # Fetch chapters
+        try:
+            self._schedule_chapters_load(article)
+        except Exception:
+            pass
+
+
+    def on_content_focus(self, event):
+        """When the content field receives focus, force an immediate full-text load for the selected article."""
+        try:
+            event.Skip()
+        except Exception:
+            pass
+
+        try:
+            idx = self.list_ctrl.GetFirstSelected()
+        except Exception:
+            idx = -1
+
+        if idx is None or idx < 0 or idx >= len(self.current_articles):
+            return
+
+        try:
+            self._schedule_fulltext_load_for_index(idx, force=True)
+        except Exception:
+            pass
+
+    def _fulltext_cache_key_for_article(self, article, idx: int):
+        url = (getattr(article, "url", None) or "").strip()
+        article_id = getattr(article, "id", None) or getattr(article, "article_id", None) or str(idx)
+        cache_key = url if url else f"article:{article_id}"
+        return cache_key, url, str(article_id)
+
+    def _schedule_fulltext_load_for_index(self, idx: int, force: bool = False):
+        if idx is None or idx < 0 or idx >= len(self.current_articles):
+            return
+
+        article = self.current_articles[idx]
+        cache_key, url, _article_id = self._fulltext_cache_key_for_article(article, idx)
+
+        cached = self._fulltext_cache.get(cache_key)
+        if cached:
+            try:
+                self._fulltext_loading_url = None
+                self.content_ctrl.SetValue(cached)
+                self.content_ctrl.SetInsertionPoint(0)
+            except Exception:
+                pass
+            return
+
+        # Cancel previous debounce timer.
+        if getattr(self, "_fulltext_debounce", None) is not None:
+            try:
+                self._fulltext_debounce.Stop()
+            except Exception:
+                pass
+            self._fulltext_debounce = None
+
+        delay = 0 if force else int(getattr(self, "_fulltext_debounce_ms", 350))
+        token_snapshot = int(getattr(self, "_fulltext_token", 0))
+
+        self._fulltext_debounce = wx.CallLater(delay, self._start_fulltext_load, idx, token_snapshot)
+
+    def _start_fulltext_load(self, idx: int, token_snapshot: int):
+        # Only proceed if selection hasn't changed since scheduling.
+        if token_snapshot != int(getattr(self, "_fulltext_token", 0)):
+            return
+
+        if idx is None or idx < 0 or idx >= len(self.current_articles):
+            return
+
+        try:
+            sel = self.list_ctrl.GetFirstSelected()
+        except Exception:
+            sel = idx
+        if sel is not None and sel >= 0 and sel != idx:
+            # User selection moved; don't start a load for the old index.
+            return
+
+        article = self.current_articles[idx]
+        cache_key, url, _article_id = self._fulltext_cache_key_for_article(article, idx)
+
+        # If already cached, render immediately.
+        cached = self._fulltext_cache.get(cache_key)
+        if cached:
+            try:
+                self._fulltext_loading_url = None
+                self.content_ctrl.SetValue(cached)
+                self.content_ctrl.SetInsertionPoint(0)
+            except Exception:
+                pass
+            return
+
+        # Avoid duplicate in-flight loads.
+        if getattr(self, "_fulltext_loading_url", None) == cache_key:
+            return
+        self._fulltext_loading_url = cache_key
+
+        fallback_html = getattr(article, "content", "") or ""
+        fallback_title = getattr(article, "title", "") or ""
+        fallback_author = getattr(article, "author", "") or ""
+
+        req = {
+            "idx": idx,
+            "cache_key": cache_key,
+            "url": url,
+            "fallback_html": fallback_html,
+            "fallback_title": fallback_title,
+            "fallback_author": fallback_author,
+            "token": token_snapshot,
+        }
+        self._fulltext_submit_request(req)
+
+    def _fulltext_submit_request(self, req: dict):
+        try:
+            with self._fulltext_worker_lock:
+                self._fulltext_worker_request = req
+            self._fulltext_worker_event.set()
+        except Exception:
+            pass
+
+    def _fulltext_worker_loop(self):
+        while True:
+            try:
+                self._fulltext_worker_event.wait()
+            except Exception:
+                time.sleep(0.05)
+                continue
+
+            if getattr(self, "_fulltext_worker_stop", False):
+                break
+
+            req = None
+            try:
+                with self._fulltext_worker_lock:
+                    req = self._fulltext_worker_request
+                    self._fulltext_worker_request = None
+                    self._fulltext_worker_event.clear()
+            except Exception:
+                req = None
+                try:
+                    self._fulltext_worker_event.clear()
+                except Exception:
+                    pass
+
+            if not req:
+                continue
+
+            token_snapshot = int(req.get("token", -1))
+            cache_key = (req.get("cache_key") or "").strip()
+            url = (req.get("url") or "").strip()
+            fallback_html = req.get("fallback_html") or ""
+            fallback_title = req.get("fallback_title") or ""
+            fallback_author = req.get("fallback_author") or ""
+
+            # If selection already changed before we start, skip the expensive work.
+            if token_snapshot != int(getattr(self, "_fulltext_token", 0)):
+                continue
+
+            err = None
+            rendered = None
+            try:
+                rendered = article_extractor.render_full_article(
+                    url,
+                    fallback_html=fallback_html,
+                    fallback_title=fallback_title,
+                    fallback_author=fallback_author,
+                )
+            except Exception as e:
+                err = str(e) or "Unknown error"
+                rendered = None
+
+            if not rendered:
+                # Fallback: show feed content (cleaned) rather than a blank failure message.
+                note_lines = []
+                if not url:
+                    note_lines.append("No webpage URL for this item. Showing feed content.\n\n")
+                else:
+                    note_lines.append("Full-text extraction failed. Showing feed content.\n\n")
+                if err:
+                    note_lines.append(err + "\n\n")
+
+                feed_render = None
+                try:
+                    feed_render = article_extractor.render_full_article(
+                        "",
+                        fallback_html=fallback_html,
+                        fallback_title=fallback_title,
+                        fallback_author=fallback_author,
+                    )
+                except Exception:
+                    feed_render = None
+
+                final_text = "".join(note_lines)
+                if feed_render:
+                    final_text += feed_render
+                else:
+                    # last resort: strip HTML to visible text
+                    try:
+                        final_text += (self._strip_html(fallback_html) or "").strip()
+                    except Exception:
+                        final_text += "No text available.\n"
+                rendered = final_text
+
+            def apply():
+                # Only apply if selection still matches.
+                if token_snapshot != int(getattr(self, "_fulltext_token", 0)):
+                    return
+                try:
+                    idx_now = self.list_ctrl.GetFirstSelected()
+                except Exception:
+                    idx_now = -1
+                if idx_now is None or idx_now < 0 or idx_now >= len(self.current_articles):
+                    return
+                article_now = self.current_articles[idx_now]
+                cur_key, _cur_url, _aid = self._fulltext_cache_key_for_article(article_now, idx_now)
+                if cur_key != cache_key:
+                    return
+
+                try:
+                    self._fulltext_cache[cache_key] = rendered
+                except Exception:
+                    pass
+
+                try:
+                    self._fulltext_loading_url = None
+                    self.content_ctrl.SetValue(rendered)
+                    self.content_ctrl.SetInsertionPoint(0)
+                except Exception:
+                    pass
+
+            try:
+                wx.CallAfter(apply)
+            except Exception:
+                pass
+
+    def _schedule_chapters_load(self, article):
+        # Cancel previous debounce timer.
+        if getattr(self, "_chapters_debounce", None) is not None:
+            try:
+                self._chapters_debounce.Stop()
+            except Exception:
+                pass
+            self._chapters_debounce = None
+
+        delay = int(getattr(self, "_chapters_debounce_ms", 500))
+        article_id = getattr(article, "id", None)
+
+        self._chapters_debounce = wx.CallLater(delay, self._start_chapters_load, article_id)
+
+    def _start_chapters_load(self, article_id):
+        try:
+            if hasattr(self, 'selected_article_id') and self.selected_article_id != article_id:
+                return
+        except Exception:
+            pass
+
+        # Find the article object in current list.
+        article = None
+        try:
+            for a in self.current_articles:
+                if getattr(a, "id", None) == article_id:
+                    article = a
+                    break
+        except Exception:
+            article = None
+
+        if not article:
+            return
+
+        try:
+            threading.Thread(target=self._load_chapters_thread, args=(article,), daemon=True).start()
+        except Exception:
+            pass
     def _load_chapters_thread(self, article):
         chapters = getattr(article, "chapters", None)
         if not chapters and hasattr(self.provider, "get_article_chapters"):
@@ -1434,14 +1775,54 @@ class MainFrame(wx.Frame):
         dlg.Destroy()
 
     def on_settings(self, event):
+        old_provider = None
+        try:
+            old_provider = self.config_manager.get("active_provider", "local")
+        except Exception:
+            old_provider = "local"
+
         dlg = SettingsDialog(self, self.config_manager.config)
         if dlg.ShowModal() == wx.ID_OK:
             data = dlg.get_data()
-            for k, v in data.items():
-                self.config_manager.set(k, v)
+
+            # Apply settings
+            try:
+                for k, v in data.items():
+                    self.config_manager.set(k, v)
+            except Exception:
+                pass
+
+            # Apply playback speed immediately if the player exists
             if "playback_speed" in data:
                 try:
                     self.player_window.set_playback_speed(data["playback_speed"])
+                except Exception:
+                    pass
+
+            # If provider credentials/provider selection changed, recreate provider and refresh tree/articles
+            try:
+                new_provider = self.config_manager.get("active_provider", "local")
+            except Exception:
+                new_provider = old_provider or "local"
+
+            if new_provider != old_provider or "providers" in data:
+                try:
+                    from core.factory import get_provider
+                    self.provider = get_provider(self.config_manager)
+                except Exception as e:
+                    try:
+                        print(f"Error switching provider: {e}")
+                    except Exception:
+                        pass
+                try:
+                    # Clear list/content immediately to avoid stale selection against new provider.
+                    self.current_articles = []
+                    self.list_ctrl.DeleteAllItems()
+                    self.content_ctrl.SetValue("")
+                except Exception:
+                    pass
+                try:
+                    self.refresh_feeds()
                 except Exception:
                     pass
         dlg.Destroy()

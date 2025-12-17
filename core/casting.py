@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
+import os
+import urllib.parse
 
 try:
     from core.stream_proxy import get_proxy
@@ -90,8 +92,9 @@ class BaseCaster(ABC):
         pass
     
     @abstractmethod
-    async def play(self, url: str, title: str = "IPTV Stream", 
-                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None) -> None:
+    async def play(self, url: str, title: str = "IPTV Stream",
+                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None,
+                   start_time_seconds: Optional[float] = None) -> None:
         """Start playing a stream URL."""
         pass
     
@@ -124,6 +127,14 @@ class BaseCaster(ABC):
     def is_connected(self) -> bool:
         """Check if connected to a device."""
         pass
+    async def seek(self, position_seconds: float) -> None:
+        """Seek to a position in seconds (if supported by the protocol)."""
+        raise NotImplementedError
+
+    async def get_position(self) -> Optional[float]:
+        """Return current playback position in seconds (if supported)."""
+        return None
+
 
 
 # ============================================================================
@@ -147,10 +158,7 @@ class ChromecastCaster(BaseCaster):
         self._cast = None
         self._browser = None
         self._devices: Dict[str, any] = {}
-        # Ensure proxy is ready
-        proxy = get_proxy()
-        if proxy:
-            proxy.start()
+        # StreamProxy starts lazily when needed.
     
     async def discover(self, timeout: float = 5.0) -> List[CastDevice]:
         """Discover Chromecast devices."""
@@ -241,7 +249,8 @@ class ChromecastCaster(BaseCaster):
         self._cast, self._browser = await loop.run_in_executor(None, do_connect)
     
     async def play(self, url: str, title: str = "IPTV Stream",
-                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None) -> None:
+                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None,
+                   start_time_seconds: Optional[float] = None) -> None:
         """Play a stream on Chromecast."""
         if not self._cast:
             raise ConnectionError("Not connected to a Chromecast device")
@@ -253,35 +262,144 @@ class ChromecastCaster(BaseCaster):
             
             content_type_actual = _detect_mime_type(url, content_type)
             
-            # Determine stream type
-            stream_type = "LIVE" if content_type_actual == "application/x-mpegURL" else "BUFFERED"
+            # Chromecast must be able to reach the media URL. Local files and localhost URLs
+            # must be served/proxied via StreamProxy using an IP reachable from the cast device.
+            device_ip = None
+            try:
+                device_ip = getattr(self._cast, 'host', None)
+                if not device_ip and getattr(self._cast, 'cast_info', None):
+                    device_ip = getattr(self._cast.cast_info, 'host', None)
+            except Exception:
+                device_ip = None
+            
+            try:
+                parsed = urllib.parse.urlparse(url or '')
+            except Exception:
+                parsed = urllib.parse.urlparse('')
+            
+            # Determine stream type (best-effort)
+            stream_type = 'LIVE' if content_type_actual in ('application/x-mpegURL', 'application/vnd.apple.mpegurl') else 'BUFFERED'
             
             proxy = get_proxy()
-            if proxy:
-                # Use local proxy to handle headers and format compatibility
-                if content_type_actual == "video/mp2t":
-                    # Transcode MPEG-TS to HLS for better Chromecast compatibility
-                    proxied_url = proxy.get_transcoded_url(url, headers)
-                    stream_type = "LIVE" # HLS is live
-                    content_type_actual = "application/x-mpegURL" # We are serving HLS now
-                    LOG.info(f"Remuxing MPEG-TS to HLS via proxy: {proxied_url}")
-                else:
-                    # Just proxy headers
-                    proxied_url = proxy.get_proxied_url(url, headers)
-                    LOG.info(f"Casting to Chromecast via proxy: {proxied_url} -> {url}")
-            else:
-                proxied_url = url
+            proxied_url = url
             
+            try:
+                file_path = None
+                if parsed.scheme == 'file':
+                    fp = urllib.parse.unquote(parsed.path or '')
+                    # Windows file URLs are commonly like /C:/path
+                    if fp.startswith('/') and len(fp) >= 3 and fp[2] == ':':
+                        fp = fp[1:]
+                    file_path = fp
+                elif parsed.scheme in ('', None):
+                    if url and os.path.isfile(url):
+                        file_path = url
+            
+                if proxy and file_path:
+                    proxied_url = proxy.get_file_url(file_path, device_ip=device_ip)
+                    LOG.info('Casting local file via StreamProxy: %s -> %s', proxied_url, file_path)
+                else:
+                    needs_proxy = False
+            
+                    # localhost/loopback is not reachable by Chromecast/TV
+                    if parsed.scheme in ('http', 'https') and parsed.hostname in ('127.0.0.1', 'localhost'):
+                        needs_proxy = True
+            
+                    # If headers are required, we must proxy
+                    if headers:
+                        needs_proxy = True
+            
+                    # MPEG-TS is often not playable directly; remux to HLS
+                    if content_type_actual == 'video/mp2t':
+                        needs_proxy = True
+            
+                    if proxy and needs_proxy:
+                        if content_type_actual == 'video/mp2t':
+                            proxied_url = proxy.get_transcoded_url(url, headers, device_ip=device_ip)
+                            stream_type = 'LIVE'
+                            content_type_actual = 'application/x-mpegURL'
+                            LOG.info('Remuxing MPEG-TS to HLS via proxy: %s', proxied_url)
+                        else:
+                            proxied_url = proxy.get_proxied_url(url, headers, device_ip=device_ip)
+                            LOG.info('Casting to Chromecast via proxy: %s -> %s', proxied_url, url)
+                    else:
+                        proxied_url = url
+            
+                    # Live radio endpoints often look like /stream or /listen with no extension
+                    if stream_type == 'BUFFERED' and isinstance(content_type_actual, str) and content_type_actual.startswith('audio/'):
+                        p = (parsed.path or '').lower()
+                        if not any(p.endswith(ext) for ext in ('.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav')):
+                            u = (url or '').lower()
+                            if any(tok in u for tok in ('/stream', '/listen', '/live', 'radio')):
+                                stream_type = 'LIVE'
+            except Exception as e:
+                LOG.warning('Chromecast URL preparation failed; trying direct URL: %s', e)
+                proxied_url = url
             # Note: Older/Standard versions of pychromecast's play_media do not support custom_data kwarg.
             # It was added in newer versions or specific forks. We'll omit it to be safe.
             # If headers are absolutely required, a custom receiver or proxy is needed.
-            mc.play_media(
-                proxied_url,
-                content_type_actual,
-                title=title,
-                stream_type=stream_type
-            )
+            # Start at a specific position if requested. pychromecast supports current_time in most versions.
+            target_start = None
+            try:
+                if start_time_seconds is not None:
+                    target_start = float(start_time_seconds)
+                    if target_start < 0:
+                        target_start = 0.0
+            except Exception:
+                target_start = None
+
+            kwargs = dict(title=title, autoplay=True, stream_type=stream_type)
+            if target_start and target_start > 0:
+                kwargs["current_time"] = float(target_start)
+
+            try:
+                mc.play_media(
+                    proxied_url,
+                    content_type_actual,
+                    **kwargs
+                )
+            except TypeError:
+                # Older pychromecast versions may not accept current_time
+                if "current_time" in kwargs:
+                    kwargs.pop("current_time", None)
+                mc.play_media(
+                    proxied_url,
+                    content_type_actual,
+                    **kwargs
+                )
+
             mc.block_until_active(timeout=10)
+
+            # Some devices ignore current_time; enforce via seek with retries.
+            if target_start and target_start > 0:
+                import time as _time
+                for _attempt in range(5):
+                    try:
+                        mc.update_status()
+                    except Exception:
+                        pass
+                    cur = None
+                    try:
+                        st = getattr(mc, "status", None)
+                        if st is not None:
+                            cur = getattr(st, "adjusted_current_time", None)
+                            if cur is None:
+                                cur = getattr(st, "current_time", None)
+                    except Exception:
+                        cur = None
+
+                    try:
+                        if cur is not None and abs(float(cur) - float(target_start)) <= 2.0:
+                            break
+                    except Exception:
+                        pass
+
+                    try:
+                        mc.seek(float(target_start))
+                    except Exception:
+                        pass
+                    _time.sleep(0.8)
+
         
         await loop.run_in_executor(None, do_play)
     
@@ -300,6 +418,73 @@ class ChromecastCaster(BaseCaster):
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._cast.media_controller.play)
     
+    async def seek(self, position_seconds: float) -> None:
+        """Seek to a position in seconds on Chromecast (best-effort)."""
+        if not self._cast:
+            return
+        loop = asyncio.get_event_loop()
+
+        def do_seek():
+            import time as _time
+            try:
+                mc = self._cast.media_controller
+                # Ensure media session is active before seeking.
+                try:
+                    if hasattr(mc, 'block_until_active'):
+                        mc.block_until_active(timeout=10)
+                except Exception:
+                    pass
+
+                start = _time.time()
+                while _time.time() - start < 10:
+                    try:
+                        mc.update_status()
+                    except Exception:
+                        pass
+                    st = getattr(mc, 'status', None)
+                    if st is not None and getattr(st, 'media_session_id', None) is not None:
+                        break
+                    _time.sleep(0.2)
+
+                try:
+                    mc.seek(float(position_seconds))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        await loop.run_in_executor(None, do_seek)
+
+    async def get_position(self) -> Optional[float]:
+        """Get current playback position in seconds from Chromecast (best-effort)."""
+        if not self._cast:
+            return None
+        loop = asyncio.get_event_loop()
+
+        def do_get():
+            try:
+                mc = self._cast.media_controller
+                try:
+                    mc.update_status()
+                except Exception:
+                    pass
+                st = getattr(mc, 'status', None)
+                if st is None:
+                    return None
+                v = getattr(st, 'adjusted_current_time', None)
+                if v is None:
+                    v = getattr(st, 'current_time', None)
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+            except Exception:
+                return None
+
+        return await loop.run_in_executor(None, do_get)
+
     async def set_volume(self, level: float) -> None:
         if self._cast:
             loop = asyncio.get_event_loop()
@@ -481,7 +666,8 @@ class DLNACaster(BaseCaster):
             raise ConnectionError(f"Failed to connect to {device.name}: {e}")
     
     async def play(self, url: str, title: str = "IPTV Stream",
-                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None) -> None:
+                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None,
+                   start_time_seconds: Optional[float] = None) -> None:
         """Play a stream on DLNA device."""
         if not self._device:
             raise ConnectionError("Not connected to a DLNA device")
@@ -677,7 +863,8 @@ class AirPlayCaster(BaseCaster):
         return await pyatv.pair(config, conf.Protocol.AirPlay, loop=asyncio.get_event_loop())
     
     async def play(self, url: str, title: str = "IPTV Stream",
-                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None) -> None:
+                   content_type: str = "video/mp2t", headers: Optional[Dict[str, str]] = None,
+                   start_time_seconds: Optional[float] = None) -> None:
         """Play a stream on AirPlay."""
         if not self._atv:
             raise ConnectionError("Not connected to an AirPlay device")
@@ -690,7 +877,13 @@ class AirPlayCaster(BaseCaster):
             # often fetch content directly without needing custom headers from the client.
             # If a stream requires custom headers, a proxy might be needed or
             # pyatv's capabilities extended.
-            await stream.play_url(url, position=0)
+            pos = 0
+            try:
+                if start_time_seconds is not None:
+                    pos = max(0, int(float(start_time_seconds)))
+            except Exception:
+                pos = 0
+            await stream.play_url(url, position=pos)
         except Exception as e:
             # pyatv 0.14+ raises NotSupportedError if the connected protocol doesn't support streaming (e.g. RAOP only)
             if "NotSupportedError" in str(type(e).__name__):
@@ -898,15 +1091,15 @@ class CastingManager:
             return await caster.start_pairing(device)
         raise CastError("Pairing not supported for this device type")
 
-    def play(self, url: str, title: str = "IPTV Stream", channel: Optional[Dict[str, str]] = None) -> None:
-        self.dispatch(self._play_async(url, title, channel))
+    def play(self, url: str, title: str = "IPTV Stream", channel: Optional[Dict[str, str]] = None, content_type: str = "audio/mpeg", start_time_seconds: Optional[float] = None) -> None:
+        self.dispatch(self._play_async(url, title, channel, content_type, start_time_seconds))
 
-    async def _play_async(self, url: str, title: str, channel: Optional[Dict[str, str]]) -> None:
+    async def _play_async(self, url: str, title: str, channel: Optional[Dict[str, str]], content_type: str, start_time_seconds: Optional[float]) -> None:
         if not self.active_caster:
             raise ConnectionError("No active cast device")
 
         headers = channel_http_headers(channel)
-        await self.active_caster.play(url, title, headers=headers)
+        await self.active_caster.play(url, title, content_type=content_type, headers=headers, start_time_seconds=start_time_seconds)
 
     def stop_playback(self) -> None:
         if self.active_caster:
@@ -919,6 +1112,23 @@ class CastingManager:
     def resume(self) -> None:
         if self.active_caster:
             self.dispatch(self.active_caster.resume())
+
+    def seek(self, position_seconds: float) -> None:
+        """Seek on the active cast device (seconds)."""
+        if self.active_caster:
+            try:
+                self.dispatch(self.active_caster.seek(position_seconds))
+            except Exception:
+                pass
+
+    def get_position(self) -> Optional[float]:
+        """Return current playback position (seconds) from the active cast device."""
+        if self.active_caster:
+            try:
+                return self.dispatch(self.active_caster.get_position())
+            except Exception:
+                return None
+        return None
 
     def disconnect(self) -> None:
         self.dispatch(self._disconnect_async())

@@ -7,6 +7,7 @@ from core import utils
 from core.casting import CastingManager
 from urllib.parse import urlparse
 from core.range_cache_proxy import get_range_cache_proxy
+from .hotkeys import HoldRepeatHotkeys
 
 
 class CastDialog(wx.Dialog):
@@ -14,6 +15,7 @@ class CastDialog(wx.Dialog):
         super().__init__(parent, title="Cast to Device", size=(400, 300))
         self.manager = manager
         self.devices = []
+        self.selected_device = None
         
         sizer = wx.BoxSizer(wx.VERTICAL)
         
@@ -78,15 +80,33 @@ class PlayerFrame(wx.Frame):
         self.casting_manager = CastingManager()
         self.casting_manager.start()
         self.is_casting = False
-        
+        self._cast_last_pos_ms = 0
+        self._cast_local_was_playing = False
+        self._cast_poll_ts = 0.0
+
+        # Cast handoff tracking
+        self._cast_handoff_source_url = None
+        self._cast_handoff_target_ms = 0
+        self._cast_handoff_attempts_left = 0
+        self._timer_interval_ms = 0
+
+        # Resume Seek State
+        self._pending_resume_seek_ms = None
+        self._pending_resume_seek_attempts = 0
+        self._pending_resume_seek_max_attempts = 25
+        self._pending_resume_paused = False
+
+        # Slider State
+        self._is_dragging_slider = False
+
         # VLC Instance
-        # Extra caching helps on high-latency streams and makes seeking less stuttery.
-        cache_ms = int(self.config_manager.get("vlc_network_caching_ms", 5000))
-        if cache_ms < 0:
-            cache_ms = 0
-        file_cache_ms = max(2000, cache_ms)
+        cache_ms = int(self.config_manager.get("vlc_network_caching_ms", 500))
+        if cache_ms < 0: cache_ms = 0
+        file_cache_ms = max(500, cache_ms)
         self.instance = vlc.Instance(
             '--no-video',
+            '--input-fast-seek',
+            '--aout=directsound',
             f'--network-caching={cache_ms}',
             f'--file-caching={file_cache_ms}',
             '--http-reconnect'
@@ -106,7 +126,49 @@ class PlayerFrame(wx.Frame):
         self.current_chapters = []
         self.chapter_marks = []
         self.current_url = None
+        self._load_seq = 0
+        self._active_load_seq = 0
         self.current_title = "No Track Loaded"
+
+        # Seek coalescing / debounce
+        self._seek_target_ms = None
+        self._seek_target_ts = 0.0
+
+        self._last_vlc_time_ms = 0
+
+        # When the user taps seek keys rapidly, repeatedly calling VLC set_time()
+        # causes audio stalls (buffer flush + re-buffer). We coalesce seek inputs:
+        # - UI jumps immediately on each input.
+        # - VLC gets at most one seek every _seek_apply_max_rate_s while holding.
+        # - After the last input, we apply the final target after _seek_apply_debounce_s.
+        self._seek_apply_last_ts = 0.0  # last time we actually called VLC set_time()
+        self._seek_apply_target_ms = None
+        self._seek_apply_calllater = None
+        self._seek_input_ts = 0.0  # last seek input timestamp
+
+        try:
+            self._seek_apply_debounce_s = float(self.config_manager.get("seek_apply_debounce_s", 0.18) or 0.18)
+        except Exception:
+            self._seek_apply_debounce_s = 0.18
+        try:
+            self._seek_apply_max_rate_s = float(self.config_manager.get("seek_apply_max_rate_s", 0.35) or 0.35)
+        except Exception:
+            self._seek_apply_max_rate_s = 0.35
+
+        # Clamp to sane values
+        self._seek_apply_debounce_s = max(0.06, min(0.50, float(self._seek_apply_debounce_s)))
+        self._seek_apply_max_rate_s = max(0.12, min(1.00, float(self._seek_apply_max_rate_s)))
+
+# Authoritative position tracking
+        self._pos_ms = 0
+        self._pos_ts = time.monotonic()
+        self._pos_allow_backwards_until_ts = 0.0
+        self._pos_last_timer_ts = 0.0
+
+        # Seek guard
+        self._seek_guard_target_ms = None
+        self._seek_guard_attempts_left = 0
+        self._seek_guard_calllater = None
 
         # Range-cache proxy recovery state
         self._last_orig_url = None
@@ -115,21 +177,31 @@ class PlayerFrame(wx.Frame):
         self._last_range_proxy_headers = None
         self._last_range_proxy_cache_dir = None
         self._last_range_proxy_prefetch_kb = None
+        self._last_range_proxy_initial_burst_kb = None
+        self._last_range_proxy_initial_inline_kb = None
         self._range_proxy_retry_count = 0
         self._last_load_chapters = None
         self._last_load_title = None
         
-        # Playback speed handling (init value before UI uses it)
+        # Playback speed handling
         self.playback_speed = float(self.config_manager.get("playback_speed", 1.0))
         # Media key settings
         self.volume = int(self.config_manager.get("volume", 100))
         self.volume_step = int(self.config_manager.get("volume_step", 5))
         self.seek_back_ms = int(self.config_manager.get("seek_back_ms", 10000))
-        self.seek_forward_ms = int(self.config_manager.get("seek_forward_ms", 30000))
+        self.seek_forward_ms = int(self.config_manager.get("seek_forward_ms", self.seek_back_ms))
+        if self.seek_forward_ms != self.seek_back_ms:
+            self.seek_forward_ms = int(self.seek_back_ms)
+            try:
+                self.config_manager.set("seek_forward_ms", int(self.seek_forward_ms))
+            except Exception:
+                pass
 
         self.init_ui()
         self.Bind(wx.EVT_CLOSE, self.on_close)
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
+
+        self._media_hotkeys = HoldRepeatHotkeys(self, hold_delay_s=0.2, repeat_interval_s=0.3, poll_interval_ms=200)
 
         # Apply initial volume
         self.set_volume_percent(self.volume, persist=False)
@@ -158,22 +230,23 @@ class PlayerFrame(wx.Frame):
             pass
 
     # ---------------------------------------------------------------------
-    # VLC error handling for local range-cache proxy
+    # VLC error handling
     # ---------------------------------------------------------------------
 
     def _on_vlc_error(self, event) -> None:
+        print("DEBUG: VLC error event")
         try:
             wx.CallAfter(self._handle_vlc_error)
         except Exception:
             pass
 
     def _handle_vlc_error(self) -> None:
+        print("DEBUG: Handling VLC error")
         if self.is_casting:
             return
         if not self._last_vlc_url:
             return
 
-        # Only auto-recover for the range-cache proxy URLs.
         if not self._last_used_range_proxy or not self._last_orig_url:
             return
 
@@ -188,9 +261,9 @@ class PlayerFrame(wx.Frame):
                     background_download=bool(self.config_manager.get('range_cache_background_download', True)),
                     background_chunk_kb=int(self.config_manager.get('range_cache_background_chunk_kb', 8192) or 8192),
                     inline_window_kb=inline_window_kb,
+                    initial_burst_kb=int(self._last_range_proxy_initial_burst_kb or self.config_manager.get('range_cache_initial_burst_kb', 65536) or 65536),
+                    initial_inline_prefetch_kb=int(self._last_range_proxy_initial_inline_kb or self.config_manager.get('range_cache_initial_inline_prefetch_kb', 1024) or 1024),
                 )
-                # Best-effort restart only if the server is truly dead.
-                # Avoid proxy.stop() here: it can break the exact URL VLC is trying to load.
                 try:
                     proxy.start()
                 except Exception:
@@ -200,10 +273,9 @@ class PlayerFrame(wx.Frame):
                 self._load_vlc_url(new_url)
                 return
             except Exception:
-                # Fall through to direct fallback below
                 pass
 
-        # Second: fall back to the original URL to avoid hard failure.
+        # Second: fall back to the original URL
         if self._range_proxy_retry_count == 1:
             self._range_proxy_retry_count = 2
             try:
@@ -213,44 +285,79 @@ class PlayerFrame(wx.Frame):
             except Exception:
                 pass
 
-    def _load_vlc_url(self, final_url: str) -> None:
-        """Load a URL into the embedded VLC player (local playback only)."""
+    def _load_vlc_url(self, final_url: str, load_seq: int | None = None) -> None:
+        print(f"DEBUG: _load_vlc_url {final_url}")
+        try:
+            if load_seq is None:
+                load_seq = int(getattr(self, '_active_load_seq', 0))
+            else:
+                load_seq = int(load_seq)
+        except Exception:
+            load_seq = 0
         try:
             self.player.stop()
         except Exception:
             pass
         media = self.instance.media_new(final_url)
-        # Re-apply caching options at load time so changes in Settings take effect without restart.
         try:
-            cache_ms = int(self.config_manager.get('vlc_network_caching_ms', 5000))
-            if cache_ms < 0:
-                cache_ms = 0
-            # When playing through the local range-cache proxy, VLC's own network buffering
-            # just adds seek delay. The proxy is doing the heavy lifting.
-            try:
-                if isinstance(final_url, str) and final_url.startswith('http://127.0.0.1:') and '/media?id=' in final_url:
-                    cache_ms = min(cache_ms, 800)
-            except Exception:
-                pass
-            file_cache_ms = max(2000, cache_ms)
+            cache_ms = int(self.config_manager.get('vlc_network_caching_ms', 500))
+            if cache_ms < 0: cache_ms = 0
+
+            if isinstance(final_url, str) and final_url.startswith('http://127.0.0.1:') and '/media?id=' in final_url:
+                cache_ms = int(self.config_manager.get('vlc_local_proxy_network_caching_ms', 50))
+                if cache_ms < 0: cache_ms = 0
+                file_cache_ms = int(self.config_manager.get('vlc_local_proxy_file_caching_ms', 50))
+                if file_cache_ms < 0: file_cache_ms = 0
+            else:
+                file_cache_ms = max(500, cache_ms)
+
+            print(f"DEBUG: VLC options: network-caching={cache_ms}, file-caching={file_cache_ms}")
             media.add_option(f':network-caching={cache_ms}')
             media.add_option(f':file-caching={file_cache_ms}')
             media.add_option(':http-reconnect')
+            media.add_option(':http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
         except Exception:
             pass
         self.player.set_media(media)
-        self.player.play()
-        self.is_playing = True
+        def _do_play():
+            try:
+                if int(getattr(self, '_active_load_seq', 0)) != int(load_seq):
+                    print("DEBUG: _do_play aborted (stale seq)")
+                    return
+            except Exception:
+                pass
+            try:
+                print("DEBUG: Calling self.player.play()")
+                self.player.play()
+            except Exception:
+                return
+            try:
+                self.player.audio_set_volume(int(getattr(self, 'volume', 100)))
+            except Exception:
+                pass
+            self.is_playing = True
+            try:
+                self.play_btn.SetLabel('Pause')
+            except Exception:
+                pass
+
         try:
-            self.play_btn.SetLabel('Pause')
+            wx.CallLater(50, _do_play)
+        except Exception:
+            _do_play()
+
+        try:
+            desired = 2000
+            try:
+                if getattr(self, '_pending_resume_seek_ms', None) is not None:
+                    desired = 250
+            except Exception:
+                desired = 2000
+            if (not self.timer.IsRunning()) or int(getattr(self, '_timer_interval_ms', 0) or 0) != int(desired):
+                self.timer.Start(int(desired))
+                self._timer_interval_ms = int(desired)
         except Exception:
             pass
-        try:
-            if not self.timer.IsRunning():
-                self.timer.Start(500)
-        except Exception:
-            pass
-        # Restore speed
         try:
             self.set_playback_speed(self.playback_speed)
         except Exception:
@@ -267,7 +374,12 @@ class PlayerFrame(wx.Frame):
         
         # Slider
         self.slider = wx.Slider(panel, value=0, minValue=0, maxValue=1000)
-        self.slider.Bind(wx.EVT_SCROLL_THUMBTRACK, self.on_seek)
+        # FIX: Separate tracking (dragging) from release (seeking)
+        self.slider.Bind(wx.EVT_SCROLL_THUMBTRACK, self.on_slider_track)
+        self.slider.Bind(wx.EVT_SCROLL_THUMBRELEASE, self.on_slider_release)
+        # Also catch CLICK/CHANGED for non-drag clicks on the bar
+        self.slider.Bind(wx.EVT_SCROLL_CHANGED, self.on_slider_release)
+        
         sizer.Add(self.slider, 0, wx.EXPAND | wx.ALL, 5)
         
         # Time Labels
@@ -297,15 +409,16 @@ class PlayerFrame(wx.Frame):
         self.stop_btn.Bind(wx.EVT_BUTTON, self.on_stop)
         btn_sizer.Add(self.stop_btn, 0, wx.ALL, 5)
         
-        # Forward 30s
-        forward_btn = wx.Button(panel, label="+30s")
+        # Forward 10s
+        forward_btn = wx.Button(panel, label="+10s")
         forward_btn.Bind(wx.EVT_BUTTON, self.on_forward)
         btn_sizer.Add(forward_btn, 0, wx.ALL, 5)
         
         # Speed
-        self.speed_btn = wx.Button(panel, label=f"Speed: {self.playback_speed}x")
-        self.speed_btn.Bind(wx.EVT_BUTTON, self.on_toggle_speed)
-        btn_sizer.Add(self.speed_btn, 0, wx.ALL, 5)
+        speeds = utils.build_playback_speeds()
+        self.speed_combo = wx.ComboBox(panel, choices=[f"{s}x" for s in speeds], style=wx.CB_READONLY)
+        self.speed_combo.Bind(wx.EVT_COMBOBOX, self.on_speed_select)
+        btn_sizer.Add(self.speed_combo, 0, wx.ALL, 5)
         
         # Cast
         self.cast_btn = wx.Button(panel, label="Cast")
@@ -323,49 +436,210 @@ class PlayerFrame(wx.Frame):
 
     def on_cast(self, event):
         if self.is_casting:
-            # Disconnect
-            self.casting_manager.disconnect()
-            self.is_casting = False
-            self.cast_btn.SetLabel("Cast")
-            self.title_lbl.SetLabel(f"{self.current_title} (Local)")
-            # Should resume local playback?
-            if self.current_url:
-                self.load_media(self.current_url, is_youtube=False, chapters=self.current_chapters) # Re-load local
-        else:
-            # Show dialog
-            dlg = CastDialog(self, self.casting_manager)
-            if dlg.ShowModal() == wx.ID_OK:
-                device = dlg.selected_device
+            cast_pos_ms = None
+            try:
+                pos_sec = self.casting_manager.get_position()
+                if pos_sec is not None:
+                    cast_pos_ms = int(float(pos_sec) * 1000.0)
+            except Exception:
+                cast_pos_ms = None
+
+            if cast_pos_ms is None:
                 try:
-                    self.casting_manager.connect(device)
-                    self.is_casting = True
-                    self.cast_btn.SetLabel("Disconnect")
-                    self.title_lbl.SetLabel(f"{self.current_title} (Casting to {device.name})")
-                    
-                    # Stop local player if playing
-                    self.player.stop()
-                    
-                    # Start casting if we have media
-                    if self.current_url:
-                        self.casting_manager.play(self.current_url, self.current_title)
-                        self.is_playing = True
-                        self.play_btn.SetLabel("Pause")
-                        
-                except Exception as e:
-                    wx.MessageBox(f"Connection failed: {e}", "Error", wx.ICON_ERROR)
-            dlg.Destroy()
+                    cast_pos_ms = int(getattr(self, '_cast_last_pos_ms', 0) or 0)
+                except Exception:
+                    cast_pos_ms = 0
+
+            cast_was_playing = bool(self.is_playing)
+
+            try:
+                self.casting_manager.disconnect()
+            except Exception:
+                pass
+
+            self.is_casting = False
+            try:
+                self.cast_btn.SetLabel('Cast')
+            except Exception:
+                pass
+            try:
+                self.title_lbl.SetLabel(f"{self.current_title} (Local)")
+            except Exception:
+                pass
+
+            if self.current_url:
+                same_media = False
+                try:
+                    same_media = (getattr(self, '_cast_handoff_source_url', None) == self.current_url)
+                except Exception:
+                    same_media = False
+
+                if same_media:
+                    try:
+                        if self._resume_local_from_cast(int(cast_pos_ms), bool(cast_was_playing)):
+                            self._cast_handoff_source_url = None
+                            return
+                    except Exception:
+                        pass
+
+                self._pending_resume_seek_ms = max(0, int(cast_pos_ms))
+                self._pending_resume_seek_attempts = 0
+                self._pending_resume_paused = (not cast_was_playing)
+                self.load_media(self.current_url, is_youtube=False, chapters=self.current_chapters)
+                self._cast_handoff_source_url = None
+            return
+
+        local_pos_ms = 0
+        try:
+            if getattr(self, '_seek_target_ms', None) is not None:
+                local_pos_ms = int(self._seek_target_ms or 0)
+            else:
+                local_pos_ms = int(self.player.get_time() or 0)
+            if local_pos_ms < 0:
+                local_pos_ms = 0
+        except Exception:
+            local_pos_ms = 0
+
+        local_was_playing = bool(self.is_playing)
+        self._cast_local_was_playing = local_was_playing
+        self._cast_last_pos_ms = local_pos_ms
+
+        dlg = CastDialog(self, self.casting_manager)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            device = dlg.selected_device
+            if not device:
+                return
+
+            try:
+                self.casting_manager.connect(device)
+                self.is_casting = True
+                self.cast_btn.SetLabel('Disconnect')
+                self.title_lbl.SetLabel(f"{self.current_title} (Casting to {device.name})")
+
+                if local_was_playing:
+                    try:
+                        self.player.pause()
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.player.set_pause(1)
+                    except Exception:
+                        pass
+
+                if self.current_url:
+                    start_sec = None
+                    try:
+                        if local_pos_ms and int(local_pos_ms) > 0:
+                            start_sec = float(local_pos_ms) / 1000.0
+                    except Exception:
+                        start_sec = None
+                    self._cast_handoff_source_url = self.current_url
+                    self.casting_manager.play(self.current_url, self.current_title, content_type='audio/mpeg', start_time_seconds=start_sec)
+                    if local_pos_ms > 0:
+                        try:
+                            self._cast_handoff_target_ms = int(local_pos_ms)
+                            self._cast_handoff_attempts_left = 4
+                            wx.CallLater(1200, self._cast_handoff_seek_tick)
+                        except Exception:
+                            pass
+
+                    if not local_was_playing:
+                        try:
+                            self.casting_manager.pause()
+                        except Exception:
+                            pass
+                        self.is_playing = False
+            except Exception as e:
+                wx.MessageBox(f"Connection failed: {e}", 'Error', wx.ICON_ERROR)
+        finally:
+            try:
+                dlg.Destroy()
+            except Exception:
+                pass
+
+    def _cast_handoff_seek_tick(self):
+        try:
+            if not bool(getattr(self, 'is_casting', False)):
+                return
+            target_ms = int(getattr(self, '_cast_handoff_target_ms', 0) or 0)
+            if target_ms <= 0:
+                return
+
+            try:
+                pos_sec = self.casting_manager.get_position()
+                if pos_sec is not None:
+                    cur_ms = int(float(pos_sec) * 1000.0)
+                    self._cast_last_pos_ms = int(cur_ms)
+                    if abs(int(cur_ms) - int(target_ms)) <= 2000:
+                        return
+            except Exception:
+                pass
+
+            try:
+                self.casting_manager.seek(float(target_ms) / 1000.0)
+            except Exception:
+                pass
+
+            try:
+                left = int(getattr(self, '_cast_handoff_attempts_left', 0) or 0)
+            except Exception:
+                left = 0
+            left -= 1
+            self._cast_handoff_attempts_left = left
+            if left > 0:
+                wx.CallLater(1200, self._cast_handoff_seek_tick)
+        except Exception:
+            pass
+
+    def _resume_local_from_cast(self, position_ms: int, was_playing: bool) -> bool:
+        try:
+            position_ms = max(0, int(position_ms))
+        except Exception:
+            position_ms = 0
+
+        try:
+            media_obj = None
+            try:
+                media_obj = self.player.get_media()
+            except Exception:
+                media_obj = None
+            if media_obj is None:
+                return False
+
+            try:
+                desired = 250
+                if (not self.timer.IsRunning()) or int(getattr(self, '_timer_interval_ms', 0) or 0) != int(desired):
+                    self.timer.Start(int(desired))
+                    self._timer_interval_ms = int(desired)
+            except Exception:
+                pass
+
+            try:
+                self.player.play()
+            except Exception:
+                pass
+
+            self._pending_resume_seek_ms = int(position_ms)
+            self._pending_resume_seek_attempts = 0
+            self._pending_resume_paused = (not bool(was_playing))
+            return True
+        except Exception:
+            return False
 
     def _maybe_range_cache_url(self, url: str) -> str:
-        """Wrap certain high-latency hosts with a local range-caching proxy to make seeking faster."""
         try:
             if not url:
                 return url
-            # Track the original URL for recovery/fallback
             self._last_orig_url = url
             self._last_used_range_proxy = False
             self._last_range_proxy_headers = None
             self._last_range_proxy_cache_dir = None
             self._last_range_proxy_prefetch_kb = None
+            self._last_range_proxy_initial_burst_kb = None
+            self._last_range_proxy_initial_inline_kb = None
             self._last_vlc_url = url
             self._range_proxy_retry_count = 0
             low = url.lower()
@@ -373,70 +647,131 @@ class PlayerFrame(wx.Frame):
                 return url
             if not bool(self.config_manager.get('range_cache_enabled', True)):
                 return url
-            hosts = self.config_manager.get('range_cache_hosts', ['promodj.com']) or []
+            apply_all = bool(self.config_manager.get('range_cache_apply_all_hosts', True))
+            hosts = self.config_manager.get('range_cache_hosts', []) or []
+            try:
+                if any(str(h).strip() in ('*', 'all', 'ALL') for h in hosts):
+                    apply_all = True
+            except Exception:
+                pass
             try:
                 host = urlparse(url).netloc.lower()
             except Exception:
                 host = ''
-            if not host or not any(str(h).lower() in host for h in hosts):
-                return url
+            if not apply_all:
+                if not host or not hosts:
+                    return url
+                host_ok = False
+                for h in hosts:
+                    try:
+                        hs = str(h).strip().lower()
+                    except Exception:
+                        continue
+                    if not hs:
+                        continue
+                    if hs.startswith('*.') and host.endswith(hs[1:]):
+                        host_ok = True
+                        break
+                    if host == hs or host.endswith('.' + hs):
+                        host_ok = True
+                        break
+                    if hs in host:
+                        host_ok = True
+                        break
+                if not host_ok:
+                    return url
             cache_dir = self.config_manager.get('range_cache_dir', '') or None
             prefetch_kb = int(self.config_manager.get('range_cache_prefetch_kb', 16384) or 16384)
             inline_window_kb = int(self.config_manager.get('range_cache_inline_window_kb', 1024) or 1024)
             background_download = bool(self.config_manager.get('range_cache_background_download', True))
             background_chunk_kb = int(self.config_manager.get('range_cache_background_chunk_kb', 8192) or 8192)
+            initial_burst_kb = int(self.config_manager.get('range_cache_initial_burst_kb', 65536) or 65536)
+            initial_inline_kb = int(self.config_manager.get('range_cache_initial_inline_prefetch_kb', 1024) or 1024)
             proxy = get_range_cache_proxy(cache_dir=cache_dir if cache_dir else None, prefetch_kb=prefetch_kb,
                                          background_download=background_download, background_chunk_kb=background_chunk_kb,
-                                         inline_window_kb=inline_window_kb)
+                                         inline_window_kb=inline_window_kb,
+                                         initial_burst_kb=initial_burst_kb,
+                                         initial_inline_prefetch_kb=initial_inline_kb)
             req_headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             }
-            # Some hosts behave better (and allow reliable range seeks) with a browser referrer.
             if 'promodj.com' in host:
                 req_headers['Referer'] = 'https://promodj.com/'
             self._last_used_range_proxy = True
             self._last_range_proxy_headers = dict(req_headers)
             self._last_range_proxy_cache_dir = cache_dir if cache_dir else None
             self._last_range_proxy_prefetch_kb = prefetch_kb
+            self._last_range_proxy_initial_burst_kb = initial_burst_kb
+            self._last_range_proxy_initial_inline_kb = initial_inline_kb
             proxied = proxy.proxify(url, headers=req_headers)
-            # Preflight: ensure the local proxy port is actually listening before handing it to VLC.
+            print(f"DEBUG: Proxy URL generated: {proxied}")
             try:
                 pu = urlparse(proxied)
                 if pu.hostname in ("127.0.0.1", "localhost") and pu.port:
-                    # Wait up to ~2 seconds for the port to accept connections.
-                    # Do NOT call proxy.stop() here: stopping/rebinding breaks any in-flight VLC stream.
-                    deadline = time.time() + 2.0
+                    deadline = time.time() + 3.0
                     ok = False
                     while time.time() < deadline:
                         try:
-                            s = socket.create_connection((pu.hostname, int(pu.port)), timeout=0.25)
+                            s = socket.create_connection((pu.hostname, int(pu.port)), timeout=0.5)
                             ok = True
                             try:
                                 s.close()
                             except Exception:
                                 pass
                             break
-                        except Exception:
+                        except Exception as e:
+                            # print(f"DEBUG: Proxy connection check failed: {e}")
                             ok = False
-                            time.sleep(0.05)
+                            time.sleep(0.1)
                     if not ok:
-                        # Fall back to direct URL if the local proxy isn't reachable.
+                        print("DEBUG: Proxy skipped - connection check timed out.")
                         self._last_used_range_proxy = False
                         self._last_vlc_url = url
                         return url
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG: Proxy connection check error: {e}")
                 pass
+            
+            print("DEBUG: Proxy connection verified. Using proxy.")
             self._last_vlc_url = proxied
             return proxied
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: _maybe_range_cache_url exception: {e}")
             return url
 
     def load_media(self, url, is_youtube=False, chapters=None, title=None):
+        print(f"DEBUG: load_media url={url}, is_casting={self.is_casting}")
         if not url:
             return
             
         self.current_url = url
-        # Need title?
+        try:
+            self._load_seq += 1
+            self._active_load_seq = self._load_seq
+        except Exception:
+            pass
+
+        try:
+            self._pos_ms = 0
+            self._pos_ts = time.monotonic()
+            self._pos_allow_backwards_until_ts = 0.0
+            self._pos_last_timer_ts = 0.0
+            self._last_vlc_time_ms = 0
+            self._seek_target_ms = None
+            self._seek_target_ts = 0.0
+        except Exception:
+            pass
+        try:
+            self._seek_guard_target_ms = None
+            self._seek_guard_attempts_left = 0
+            if getattr(self, '_seek_guard_calllater', None) is not None:
+                try:
+                    self._seek_guard_calllater.Stop()
+                except Exception:
+                    pass
+                self._seek_guard_calllater = None
+        except Exception:
+            pass
         
         self.slider.SetValue(0)
         self.current_time_lbl.SetLabel("00:00")
@@ -459,19 +794,22 @@ class PlayerFrame(wx.Frame):
                 return
         else:
             self.current_title = title or "Playing Audio..."
+            try:
+                maxr = int(self.config_manager.get('http_max_redirects', 30))
+            except Exception:
+                maxr = 30
+            final_url = utils.resolve_final_url(final_url, max_redirects=maxr)
+            final_url = utils.normalize_url_for_vlc(final_url)
             
         self.title_lbl.SetLabel(self.current_title)
 
         if self.is_casting:
-            self.casting_manager.play(final_url, self.current_title)
-            self.is_playing = True
-            self.play_btn.SetLabel("Pause")
+            self.casting_manager.play(final_url, self.current_title, content_type="audio/mpeg")
         else:
-            # Local VLC
             final_url = self._maybe_range_cache_url(final_url)
             self._last_load_chapters = chapters
             self._last_load_title = self.current_title
-            self._load_vlc_url(final_url)
+            self._load_vlc_url(final_url, load_seq=int(getattr(self,'_active_load_seq',0)))
         
         if chapters:
             self.update_chapters(chapters)
@@ -505,77 +843,272 @@ class PlayerFrame(wx.Frame):
             
     def on_timer(self, event):
         if self.is_casting:
-            # No status update for casting yet (needs callbacks/polling)
+            try:
+                now = time.time()
+                if now - float(getattr(self, '_cast_poll_ts', 0.0)) >= 1.0:
+                    self._cast_poll_ts = now
+                    pos_sec = self.casting_manager.get_position()
+                    if pos_sec is not None:
+                        self._cast_last_pos_ms = int(float(pos_sec) * 1000.0)
+            except Exception:
+                pass
             return
 
-        if not self.player.is_playing():
-            return
-            
-        length = self.player.get_length()
-        if length != self.duration and length > 0:
-            self.duration = length
-            self.total_time_lbl.SetLabel(self._format_time(length))
-            
-        cur = self.player.get_time()
-        self.current_time_lbl.SetLabel(self._format_time(cur))
-        
-        if self.duration > 0:
-            pos = int((cur / self.duration) * 1000)
-            self.slider.SetValue(pos)
-            
-        # Update active chapter
-        if self.current_chapters:
-            cur_sec = cur / 1000.0
-            idx = -1
-            for i, ch in enumerate(self.current_chapters):
-                if cur_sec >= ch.get("start", 0):
-                    idx = i
+        try:
+            length = int(self.player.get_length() or 0)
+            if length > 0 and length != int(getattr(self, 'duration', 0) or 0):
+                self.duration = int(length)
+                try:
+                    self.total_time_lbl.SetLabel(self._format_time(int(length)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        playing_now = False
+        try:
+            playing_now = bool(self.player.is_playing())
+        except Exception:
+            playing_now = False
+
+        now_mono = time.monotonic()
+        try:
+            self._pos_last_timer_ts = float(now_mono)
+        except Exception:
+            pass
+
+        vlc_cur = 0
+        try:
+            vlc_cur = int(self.player.get_time() or 0)
+        except Exception:
+            vlc_cur = 0
+        if vlc_cur < 0:
+            vlc_cur = 0
+
+        try:
+            ui_cur = int(getattr(self, "_pos_ms", 0) or 0)
+        except Exception:
+            ui_cur = 0
+
+        try:
+            recent_seek_target = getattr(self, "_seek_target_ms", None)
+            recent_seek_ts = float(getattr(self, "_seek_target_ts", 0.0) or 0.0)
+        except Exception:
+            recent_seek_target = None
+            recent_seek_ts = 0.0
+
+        # Simplified logic: Trust our seek target for a few seconds after seeking.
+        # Otherwise, trust VLC. This prevents "fighting" where VLC reports old time
+        # during buffering and the UI jumps back and forth.
+        if recent_seek_target is not None and (now_mono - float(recent_seek_ts)) < 4.0:
+            try:
+                tgt = int(recent_seek_target)
+                # If VLC has actually jumped to the target (or close), we can sync early.
+                if abs(int(vlc_cur) - int(tgt)) <= 2000:
+                     ui_cur = int(vlc_cur)
                 else:
-                    break
-            if idx != -1:
-                self.chapter_choice.SetSelection(idx)
+                     ui_cur = int(tgt)
+            except Exception:
+                ui_cur = int(vlc_cur)
+        else:
+            ui_cur = int(vlc_cur)
+
+        try:
+            self._pos_ms = int(ui_cur)
+            self._pos_ts = float(now_mono)
+            self._last_vlc_time_ms = int(ui_cur)
+        except Exception:
+            pass
+
+        cur = int(vlc_cur)
+
+        if getattr(self, '_pending_resume_seek_ms', None) is not None:
+            try:
+                target_ms = int(self._pending_resume_seek_ms)
+                if target_ms < 0: target_ms = 0
+                if getattr(self, 'duration', 0) and int(self.duration) > 0 and target_ms > int(self.duration):
+                    target_ms = int(self.duration)
+
+                if not playing_now:
+                    try:
+                        self.player.play()
+                    except Exception:
+                        pass
+                    try:
+                        playing_now = bool(self.player.is_playing())
+                    except Exception:
+                        playing_now = False
+
+                if abs(int(cur) - int(target_ms)) > 1500:
+                    try:
+                        self.player.set_time(int(target_ms))
+                        try:
+                            ts = time.monotonic()
+                            self._seek_target_ms = int(target_ms)
+                            self._seek_target_ts = float(ts)
+                            self._pos_ms = int(target_ms)
+                            self._pos_ts = float(ts)
+                            self._last_vlc_time_ms = int(target_ms)
+                        except Exception:
+                            pass
+                        try:
+                            self._start_seek_guard(int(target_ms))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                else:
+                    self._pending_resume_seek_ms = None
+                    if bool(getattr(self, '_pending_resume_paused', False)):
+                        try:
+                            self.player.set_pause(1)
+                        except Exception:
+                            try:
+                                self.player.pause()
+                            except Exception:
+                                pass
+                        self.is_playing = False
+
+                try:
+                    self._pending_resume_seek_attempts = int(getattr(self, '_pending_resume_seek_attempts', 0) or 0) + 1
+                except Exception:
+                    self._pending_resume_seek_attempts = 1
+                if int(getattr(self, '_pending_resume_seek_attempts', 0) or 0) >= int(getattr(self, '_pending_resume_seek_max_attempts', 25) or 25):
+                    self._pending_resume_seek_ms = None
+            except Exception:
+                pass
+
+        try:
+            if not getattr(self, '_is_dragging_slider', False):
+                self.current_time_lbl.SetLabel(self._format_time(int(ui_cur)))
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, 'duration', 0) and int(self.duration) > 0:
+                # Do NOT update the slider while the user is dragging it
+                if not getattr(self, '_is_dragging_slider', False):
+                    pos = int((float(ui_cur) / float(self.duration)) * 1000.0)
+                    if pos < 0: pos = 0
+                    if pos > 1000: pos = 1000
+                    self.slider.SetValue(int(pos))
+        except Exception:
+            pass
+
+        try:
+            if self.current_chapters:
+                cur_sec = float(ui_cur) / 1000.0
+                idx = -1
+                for i, ch in enumerate(self.current_chapters):
+                    if cur_sec >= float(ch.get("start", 0) or 0):
+                        idx = i
+                    else:
+                        break
+                if idx != -1:
+                    self.chapter_choice.SetSelection(int(idx))
+        except Exception:
+            pass
+
+    def on_slider_track(self, event):
+        """Called repeatedly while dragging the slider."""
+        self._is_dragging_slider = True
+        try:
+            val = self.slider.GetValue()
+            if self.duration > 0:
+                ms = int((val / 1000.0) * self.duration)
+                self.current_time_lbl.SetLabel(self._format_time(ms))
+        except Exception:
+            pass
+        # Do not call Skip to prevent interference, but usually safe to skip.
+        event.Skip()
+
+    def on_slider_release(self, event):
+        """Called when slider is released (or clicked). Performs the seek."""
+        self._is_dragging_slider = False
+        self.on_seek(event) # Delegate to the actual seek logic
 
     def on_seek(self, event):
-        val = self.slider.GetValue()
-        if self.duration > 0:
-            target = int((val / 1000.0) * self.duration)
-            if self.is_casting:
-                # Seek not implemented in CastingManager wrapper, need direct access
-                pass # TODO: Implement casting seek
-            else:
-                self.player.set_time(target)
+        """Handle final seek action."""
+        if self.is_casting:
+            try:
+                if not self.duration or int(self.duration) <= 0:
+                    return
+                value = self.slider.GetValue()
+                fraction = float(value) / 1000.0
+                target_ms = int(fraction * int(self.duration))
+                self._cast_last_pos_ms = int(target_ms)
+                self.casting_manager.seek(float(target_ms) / 1000.0)
+            except Exception:
+                pass
+            return
+
+        if not self.duration or int(self.duration) <= 0:
+            return
+        value = self.slider.GetValue()
+        fraction = float(value) / 1000.0
+        target_ms = int(fraction * int(self.duration))
+        # Force immediate seek on release
+        self._apply_seek_time_ms(int(target_ms), force=True)
 
     def on_rewind(self, event):
         if self.is_casting:
-            pass # TODO
-        else:
-            cur = self.player.get_time()
-            self.player.set_time(max(0, cur - int(self.seek_back_ms)))
+            try:
+                cur_ms = int(getattr(self, '_cast_last_pos_ms', 0) or 0)
+                if cur_ms <= 0:
+                    pos_sec = self.casting_manager.get_position()
+                    if pos_sec is not None:
+                        cur_ms = int(float(pos_sec) * 1000.0)
+                step = int(getattr(self, 'seek_back_ms', 10000) or 10000)
+                target_ms = max(0, int(cur_ms) - int(step))
+                self._cast_last_pos_ms = int(target_ms)
+                self.casting_manager.seek(float(target_ms) / 1000.0)
+            except Exception:
+                pass
+            return
+
+        step = int(getattr(self, 'seek_back_ms', 10000) or 10000)
+        self.seek_relative_ms(-int(step))
 
     def on_forward(self, event):
         if self.is_casting:
-            pass # TODO
-        else:
-            cur = self.player.get_time()
-            if self.duration > 0:
-                self.player.set_time(min(self.duration, cur + int(self.seek_forward_ms)))
+            try:
+                cur_ms = int(getattr(self, '_cast_last_pos_ms', 0) or 0)
+                if cur_ms <= 0:
+                    pos_sec = self.casting_manager.get_position()
+                    if pos_sec is not None:
+                        cur_ms = int(float(pos_sec) * 1000.0)
+                step = int(getattr(self, 'seek_forward_ms', 10000) or 10000)
+                target_ms = int(cur_ms) + int(step)
+                if getattr(self, 'duration', 0) and int(self.duration) > 0 and target_ms > int(self.duration):
+                    target_ms = int(self.duration)
+                self._cast_last_pos_ms = int(target_ms)
+                self.casting_manager.seek(float(target_ms) / 1000.0)
+            except Exception:
+                pass
+            return
 
-    def on_toggle_speed(self, event):
-        speeds = utils.build_playback_speeds()
-        try:
-            cur_idx = speeds.index(self.playback_speed)
-            next_idx = (cur_idx + 1) % len(speeds)
-            new_speed = speeds[next_idx]
-        except ValueError:
-            new_speed = 1.0
-            
-        self.set_playback_speed(new_speed)
+        step = int(getattr(self, 'seek_forward_ms', 10000) or 10000)
+        self.seek_relative_ms(int(step))
+
+    def on_speed_select(self, event):
+        idx = self.speed_combo.GetSelection()
+        if idx != wx.NOT_FOUND:
+            speeds = utils.build_playback_speeds()
+            if idx < len(speeds):
+                speed = speeds[idx]
+                self.set_playback_speed(speed)
 
     def set_playback_speed(self, speed):
         self.playback_speed = speed
         if not self.is_casting:
             self.player.set_rate(speed)
-        self.speed_btn.SetLabel(f"Speed: {speed}x")
+        # Set combo selection
+        speeds = utils.build_playback_speeds()
+        try:
+            idx = speeds.index(speed)
+            self.speed_combo.SetSelection(idx)
+        except ValueError:
+            pass
         self.config_manager.set("playback_speed", speed)
 
     def on_chapter_select(self, event):
@@ -584,9 +1117,9 @@ class PlayerFrame(wx.Frame):
             data = self.chapter_choice.GetClientData(idx)
             start_sec = data.get("start", 0)
             if self.is_casting:
-                pass # TODO
+                pass 
             else:
-                self.player.set_time(int(start_sec * 1000))
+                self._apply_seek_time_ms(int(start_sec * 1000), force=True)
 
     def _format_time(self, ms):
         seconds = ms // 1000
@@ -594,16 +1127,14 @@ class PlayerFrame(wx.Frame):
         secs = seconds % 60
         return f"{mins:02d}:{secs:02d}"
 
-
     # ---------------------------------------------------------------------
-    # Media control helpers (keyboard shortcuts + tray integration)
+    # Media control helpers
     # ---------------------------------------------------------------------
 
     def has_media_loaded(self) -> bool:
         return bool(getattr(self, "current_url", None))
 
     def set_volume_percent(self, percent: int, persist: bool = True) -> None:
-        """Set volume in percent (0-100)."""
         try:
             percent = int(percent)
         except Exception:
@@ -611,24 +1142,20 @@ class PlayerFrame(wx.Frame):
         percent = max(0, min(100, percent))
         self.volume = percent
 
+        if not self.is_casting:
+            try:
+                self.player.audio_set_volume(int(percent))
+            except Exception:
+                pass
+
         if self.is_casting:
-            # Casting volume supported by core.casting BaseCaster, but the manager doesn't expose it.
-            # We attempt to call it if an active caster is present.
             try:
                 caster = getattr(self.casting_manager, "active_caster", None)
                 if caster is not None and hasattr(caster, "set_volume"):
                     level = float(percent) / 100.0
-                    # active_caster methods are async coroutines
                     self.casting_manager.dispatch(caster.set_volume(level))
             except Exception:
-                # If casting volume fails, ignore rather than breaking playback
                 pass
-        else:
-            try:
-                self.player.audio_set_volume(percent)
-            except Exception:
-                pass
-
         if persist and self.config_manager:
             try:
                 self.config_manager.set("volume", percent)
@@ -639,35 +1166,396 @@ class PlayerFrame(wx.Frame):
         cur = int(getattr(self, "volume", 100))
         self.set_volume_percent(cur + int(delta_percent), persist=True)
 
-    def seek_relative_ms(self, delta_ms: int) -> None:
-        """Seek relative to current position (local playback only)."""
+    # ---------------------------------------------------------------------
+    # Seek guard (local VLC)
+    # ---------------------------------------------------------------------
+
+    def _start_seek_guard(self, target_ms: int) -> None:
         if self.is_casting:
-            # Seek not implemented for casting sessions yet
             return
         try:
-            cur = int(self.player.get_time())
+            t = int(target_ms)
         except Exception:
             return
-        if cur < 0:
-            cur = 0
-        target = cur + int(delta_ms)
-        if target < 0:
-            target = 0
-        if self.duration and target > int(self.duration):
-            target = int(self.duration)
+        if t < 0:
+            t = 0
+        self._seek_guard_target_ms = int(t)
+        self._seek_guard_attempts_left = 10
         try:
-            self.player.set_time(target)
+            if self._seek_guard_calllater is not None:
+                try:
+                    self._seek_guard_calllater.Stop()
+                except Exception:
+                    pass
+                self._seek_guard_calllater = None
+        except Exception:
+            pass
+        try:
+            self._seek_guard_calllater = wx.CallLater(200, self._seek_guard_tick)
+        except Exception:
+            self._seek_guard_calllater = None
+
+    def _seek_guard_tick(self) -> None:
+        try:
+            if self.is_casting:
+                return
+            left = int(getattr(self, "_seek_guard_attempts_left", 0) or 0)
+            if left <= 0:
+                return
+            target = getattr(self, "_seek_guard_target_ms", None)
+            if target is None:
+                return
+            target_i = int(target)
+
+            cur = -1
+            try:
+                cur = int(self.player.get_time() or 0)
+            except Exception:
+                cur = -1
+            
+            # Increased tolerance slightly to 2000ms
+            if cur >= 0 and abs(int(cur) - int(target_i)) <= 2000:
+                self._seek_guard_attempts_left = 0
+                return
+
+            # CRITICAL FIX: Removed self.player.set_time(int(target_i)) here.
+            # Repeatedly calling set_time while VLC is already trying to seek
+            # causes buffers to flush and seek logic to restart, leading to cpu spikes.
+            # We just update UI state to match target and wait for VLC to catch up.
+            try:
+                self._pos_ms = int(target_i)
+                self._pos_ts = time.monotonic()
+            except Exception:
+                pass
+
+            left -= 1
+            self._seek_guard_attempts_left = int(left)
+            if left > 0:
+                try:
+                    # Increased check interval to 500ms to reduce overhead
+                    self._seek_guard_calllater = wx.CallLater(500, self._seek_guard_tick)
+                except Exception:
+                    self._seek_guard_calllater = None
         except Exception:
             pass
 
+
+    def _apply_pending_seek(self) -> None:
+        try:
+            target = self._seek_apply_target_ms
+            if target is None:
+                return
+            target_i = int(target)
+        except Exception:
+            return
+
+        self._seek_apply_calllater = None
+        now = time.monotonic()
+        self._seek_apply_last_ts = now
+
+        try:
+            self._pos_ms = int(target_i)
+            self._pos_ts = float(now)
+            self._last_vlc_time_ms = int(target_i)
+        except Exception:
+            pass
+
+        try:
+            self._start_seek_guard(int(target_i))
+        except Exception:
+            pass
+
+        try:
+            self.player.set_time(target_i)
+        except Exception:
+            pass
+
+        try:
+            if self.duration and self.duration > 0:
+                pos = max(0.0, min(1.0, float(target_i) / float(self.duration)))
+                # Only update slider if we are not dragging it
+                if not getattr(self, '_is_dragging_slider', False):
+                    self.slider.SetValue(int(pos * 1000))
+        except Exception:
+            pass
+        try:
+            # Only update label if we are not dragging (dragging updates it separately)
+            if not getattr(self, '_is_dragging_slider', False):
+                self.current_time_lbl.SetLabel(self._format_time(target_i))
+        except Exception:
+            pass
+
+    def _apply_debounced_seek(self) -> None:
+
+        """Apply the most recent seek target once inputs have been idle."""
+
+        try:
+
+            self._seek_apply_calllater = None
+
+        except Exception:
+
+            pass
+
+    
+
+        now = time.monotonic()
+
+        try:
+
+            debounce = float(getattr(self, "_seek_apply_debounce_s", 0.18) or 0.18)
+
+        except Exception:
+
+            debounce = 0.18
+
+        try:
+
+            last_in = float(getattr(self, "_seek_input_ts", 0.0) or 0.0)
+
+        except Exception:
+
+            last_in = 0.0
+
+    
+
+        remain = float(debounce) - float(now - last_in)
+
+        if remain > 0.02:
+
+            try:
+
+                self._seek_apply_calllater = wx.CallLater(max(1, int(remain * 1000)), self._apply_debounced_seek)
+
+            except Exception:
+
+                self._seek_apply_calllater = None
+
+            return
+
+    
+
+        self._apply_pending_seek()
+
+    
+
+    def _apply_seek_time_ms(self, target_ms: int, force: bool = False) -> None:
+        print(f"DEBUG: _apply_seek_time_ms target={target_ms} force={force}")
+        if self.is_casting:
+            return
+        try:
+            t = int(target_ms)
+        except Exception:
+            return
+        if t < 0:
+            t = 0
+
+        self._seek_apply_target_ms = int(t)
+        now = time.monotonic()
+
+        try:
+            self._seek_input_ts = float(now)
+        except Exception:
+            pass
+
+        try:
+            self._seek_target_ms = int(t)
+            self._seek_target_ts = float(now)
+        except Exception:
+            pass
+
+        try:
+            if int(t) + 1200 < int(getattr(self, "_pos_ms", 0) or 0):
+                self._pos_allow_backwards_until_ts = float(now) + 3.0
+        except Exception:
+            pass
+
+        # Cancel any pending debounced apply
+        try:
+            if self._seek_apply_calllater is not None:
+                try:
+                    self._seek_apply_calllater.Stop()
+                except Exception:
+                    pass
+                self._seek_apply_calllater = None
+        except Exception:
+            pass
+
+        if force:
+            self._apply_pending_seek()
+            return
+
+        # If paused/stopped, apply immediately so it feels instant.
+        playing_now = False
+        try:
+            playing_now = bool(self.player.is_playing())
+        except Exception:
+            playing_now = bool(getattr(self, "is_playing", False))
+
+        if not playing_now:
+            self._apply_pending_seek()
+            return
+
+        # While playing, limit how often we ask VLC to seek during a hold.
+        try:
+            last_apply = float(getattr(self, "_seek_apply_last_ts", 0.0) or 0.0)
+        except Exception:
+            last_apply = 0.0
+        try:
+            max_rate = float(getattr(self, "_seek_apply_max_rate_s", 0.35) or 0.35)
+        except Exception:
+            max_rate = 0.35
+
+        if (now - last_apply) >= float(max_rate):
+            self._apply_pending_seek()
+            return
+
+        # Otherwise debounce until inputs stop.
+        try:
+            debounce = float(getattr(self, "_seek_apply_debounce_s", 0.18) or 0.18)
+        except Exception:
+            debounce = 0.18
+        try:
+            self._seek_apply_calllater = wx.CallLater(max(1, int(float(debounce) * 1000)), self._apply_debounced_seek)
+        except Exception:
+            self._seek_apply_calllater = None
+
+
+    def seek_relative_ms(self, delta_ms: int) -> None:
+        if self.is_casting:
+            return
+
+        try:
+            delta = int(delta_ms)
+        except Exception:
+            return
+
+        now = time.monotonic()
+        base = None
+        try:
+            if self._seek_target_ms is not None and (now - float(self._seek_target_ts)) < 1.0:
+                base = int(self._seek_target_ms)
+        except Exception:
+            base = None
+
+        if base is None:
+
+            # Prefer our UI-tracked position (fast), but also consult VLC time so seeks
+
+            # are correct even between slow timer ticks.
+
+            try:
+
+                ui_base = int(getattr(self, "_pos_ms", 0) or 0)
+
+            except Exception:
+
+                ui_base = 0
+
+        
+
+            vlc_base = None
+
+            try:
+
+                v = int(self.player.get_time() or 0)
+
+                if v >= 0:
+
+                    vlc_base = int(v)
+
+            except Exception:
+
+                vlc_base = None
+
+        
+
+            try:
+
+                allow_back = float(getattr(self, "_pos_allow_backwards_until_ts", 0.0) or 0.0)
+
+            except Exception:
+
+                allow_back = 0.0
+
+        
+
+            if int(delta) < 0 or now < float(allow_back):
+
+                # When rewinding (or shortly after), trust the UI target so repeated rewinds chain.
+
+                base = int(ui_base)
+
+            else:
+
+                # Normal forward playback: VLC time may be more up-to-date than our 2s timer,
+
+                # but VLC can briefly report stale/behind values after a seek. Use whichever is ahead.
+
+                if vlc_base is not None:
+
+                    base = int(max(int(ui_base), int(vlc_base)))
+
+                    try:
+
+                        self._pos_ms = int(base)
+
+                        self._last_vlc_time_ms = int(base)
+
+                    except Exception:
+
+                        pass
+
+                else:
+
+                    base = int(ui_base)
+
+        
+        target = int(base) + delta
+
+        try:
+            if self.duration and self.duration > 0:
+                target = max(0, min(int(target), int(self.duration)))
+            else:
+                target = max(0, int(target))
+        except Exception:
+            try:
+                target = max(0, int(target))
+            except Exception:
+                return
+
+        try:
+            if int(delta) < 0:
+                self._pos_allow_backwards_until_ts = float(now) + 3.0
+        except Exception:
+            pass
+
+        self._seek_target_ms = int(target)
+        self._seek_target_ts = float(now)
+        try:
+            self._pos_ms = int(target)
+            self._pos_ts = float(now)
+            self._last_vlc_time_ms = int(target)
+        except Exception:
+            pass
+
+        try:
+            if self.duration and self.duration > 0:
+                pos = max(0.0, min(1.0, float(target) / float(self.duration)))
+                self.slider.SetValue(int(pos * 1000))
+            self.current_time_lbl.SetLabel(self._format_time(int(target)))
+        except Exception:
+            pass
+
+        self._apply_seek_time_ms(int(target), force=False)
+
     def play(self) -> None:
+        print("DEBUG: play called")
         if not self.has_media_loaded():
             return
         if self.is_casting:
             try:
                 self.casting_manager.resume()
-                self.is_playing = True
-                self.play_btn.SetLabel("Pause")
             except Exception:
                 pass
         else:
@@ -677,21 +1565,19 @@ class PlayerFrame(wx.Frame):
                 except Exception:
                     pass
                 self.player.play()
-                self.is_playing = True
-                self.play_btn.SetLabel("Pause")
                 if not self.timer.IsRunning():
                     self.timer.Start(500)
             except Exception:
                 pass
 
     def pause(self) -> None:
+        print("DEBUG: pause called")
         if not self.has_media_loaded():
             return
         if self.is_casting:
             try:
                 self.casting_manager.pause()
                 self.is_playing = False
-                self.play_btn.SetLabel("Play")
             except Exception:
                 pass
         else:
@@ -702,7 +1588,6 @@ class PlayerFrame(wx.Frame):
                     # Fallback to toggle pause
                     self.player.pause()
                 self.is_playing = False
-                self.play_btn.SetLabel("Play")
             except Exception:
                 pass
 
@@ -724,12 +1609,7 @@ class PlayerFrame(wx.Frame):
             pass
 
         self.is_playing = False
-        try:
-            self.play_btn.SetLabel("Play")
-        except Exception:
-            pass
 
-        # Reset UI
         try:
             self.slider.SetValue(0)
             self.current_time_lbl.SetLabel("00:00")
@@ -739,24 +1619,45 @@ class PlayerFrame(wx.Frame):
 
     def on_char_hook(self, event: wx.KeyEvent) -> None:
         if event.ControlDown():
-            key = event.GetKeyCode()
-            if key == wx.WXK_UP:
-                self.adjust_volume(int(getattr(self, "volume_step", 5)))
-                return
-            if key == wx.WXK_DOWN:
-                self.adjust_volume(-int(getattr(self, "volume_step", 5)))
-                return
-            if key == wx.WXK_LEFT:
-                self.seek_relative_ms(-int(getattr(self, "seek_back_ms", 10000)))
-                return
-            if key == wx.WXK_RIGHT:
-                self.seek_relative_ms(int(getattr(self, "seek_forward_ms", 30000)))
-                return
+            actions = {
+                wx.WXK_UP: lambda: self.adjust_volume(int(getattr(self, "volume_step", 5))),
+                wx.WXK_DOWN: lambda: self.adjust_volume(-int(getattr(self, "volume_step", 5))),
+                wx.WXK_LEFT: lambda: self.seek_relative_ms(-int(getattr(self, "seek_back_ms", 10000))),
+                wx.WXK_RIGHT: lambda: self.seek_relative_ms(int(getattr(self, "seek_forward_ms", 10000))),
+            }
+            try:
+                if getattr(self, "_media_hotkeys", None) and self._media_hotkeys.handle_ctrl_key(event, actions):
+                    return
+            except Exception:
+                pass
         event.Skip()
 
     def on_close(self, event):
+        try:
+            if getattr(self, "_media_hotkeys", None):
+                self._media_hotkeys.stop()
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "_seek_apply_calllater", None) is not None:
+                try:
+                    self._seek_apply_calllater.Stop()
+                except Exception:
+                    pass
+                self._seek_apply_calllater = None
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_seek_guard_calllater", None) is not None:
+                try:
+                    self._seek_guard_calllater.Stop()
+                except Exception:
+                    pass
+                self._seek_guard_calllater = None
+        except Exception:
+            pass
         self.player.stop()
         self.timer.Stop()
         self.casting_manager.stop()
         self.Hide()
-

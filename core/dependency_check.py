@@ -92,53 +92,68 @@ def ensure_media_tools():
         return
 
     # Linux family
-    def install_with(cmds):
-        for c in cmds:
-            _run_quiet(c)
+    def install_with(manager, install_cmd, update_cmd=None, pkgs=None):
+        if not pkgs:
+            return
+        
+        # Check if we are root
+        is_root = os.geteuid() == 0 if hasattr(os, "geteuid") else False
+        sudo = [] if is_root else ["sudo"]
+        
+        try:
+            if update_cmd:
+                _run_quiet(sudo + update_cmd)
+            _run_quiet(sudo + install_cmd + pkgs)
+        except Exception:
+            pass
 
+    # Debian/Ubuntu
     if shutil.which("apt-get") or shutil.which("apt"):
         base = "apt-get" if shutil.which("apt-get") else "apt"
-        cmds = []
-        if not vlc_present or not ff_present:
-            cmds.append([base, "update", "-y"])
         pkgs = []
-        if not vlc_present:
-            pkgs.append("vlc")
-        if not ff_present:
-            pkgs.append("ffmpeg")
+        if not vlc_present: pkgs.append("vlc")
+        if not ff_present: pkgs.append("ffmpeg")
         if pkgs:
-            cmds.append([base, "install", "-y"] + pkgs)
-        install_with(cmds)
+            install_with(base, [base, "install", "-y"], [base, "update"], pkgs)
         return
 
-    if shutil.which("pacman"):
-        pkgs = []
-        if not vlc_present:
-            pkgs.append("vlc")
-        if not ff_present:
-            pkgs.append("ffmpeg")
-        if pkgs:
-            install_with([["pacman", "-Syu", "--noconfirm"] + pkgs])
-        return
-
+    # Fedora / RHEL 8+ / CentOS 8+
     if shutil.which("dnf"):
         pkgs = []
-        if not vlc_present:
-            pkgs.append("vlc")
-        if not ff_present:
-            pkgs.append("ffmpeg")
+        if not vlc_present: pkgs.append("vlc")
+        if not ff_present: pkgs.append("ffmpeg")
         if pkgs:
-            install_with([["dnf", "install", "-y"] + pkgs])
+            # RHEL/CentOS often need RPM Fusion for VLC/ffmpeg.
+            # We can't easily enable that automatically without risk, 
+            # but we can try the install in case it's enabled.
+            install_with("dnf", ["dnf", "install", "-y"], None, pkgs)
         return
 
+    # Legacy RHEL / CentOS 7
+    if shutil.which("yum"):
+        pkgs = []
+        if not vlc_present: pkgs.append("vlc")
+        if not ff_present: pkgs.append("ffmpeg")
+        if pkgs:
+            install_with("yum", ["yum", "install", "-y"], None, pkgs)
+        return
+
+    # Arch Linux
+    if shutil.which("pacman"):
+        pkgs = []
+        if not vlc_present: pkgs.append("vlc")
+        if not ff_present: pkgs.append("ffmpeg")
+        if pkgs:
+            install_with("pacman", ["pacman", "-S", "--noconfirm"], ["pacman", "-Sy"], pkgs)
+        return
+
+    # OpenSUSE
     if shutil.which("zypper"):
         pkgs = []
-        if not vlc_present:
-            pkgs.append("vlc")
-        if not ff_present:
-            pkgs.append("ffmpeg")
+        if not vlc_present: pkgs.append("vlc")
+        if not ff_present: pkgs.append("ffmpeg")
         if pkgs:
-            install_with([["zypper", "--non-interactive", "install"] + pkgs])
+            install_with("zypper", ["zypper", "--non-interactive", "install"], None, pkgs)
         return
 
 
@@ -221,7 +236,11 @@ def check_and_install_dependencies():
             pass
         return
 
-    required = {'yt-dlp', 'wxpython', 'feedparser', 'requests', 'beautifulsoup4', 'python-dateutil', 'mutagen', 'python-vlc'}
+    required = {
+        'yt-dlp', 'wxpython', 'feedparser', 'requests', 'beautifulsoup4', 
+        'python-dateutil', 'mutagen', 'python-vlc',
+        'pychromecast', 'async-upnp-client', 'pyatv', 'trafilatura'
+    }
     # pkg_resources is deprecated; use importlib.metadata instead
     installed = set()
     for dist in importlib.metadata.distributions():
