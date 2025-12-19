@@ -11,3 +11,5 @@ async-upnp-client
 pyatv
 trafilatura
 webrtcvad
+# Pin setuptools to avoid pkg_resources deprecation warnings until upstream drops pkg_resources.
+setuptools<81

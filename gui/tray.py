@@ -75,6 +75,10 @@ class BlindRSSTrayIcon(wx.adv.TaskBarIcon):
         self.on_restore(event)
 
     def on_restore(self, event):
+        handler = getattr(self.frame, 'show_and_focus_main', None)
+        if callable(handler):
+            handler()
+            return
         if self.frame.IsIconized():
             self.frame.Iconize(False)
         if not self.frame.IsShown():

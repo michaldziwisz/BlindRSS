@@ -1,10 +1,13 @@
 import requests
 import time
 import urllib.parse
+import logging
 from typing import List, Dict, Any
-from datetime import datetime, timezone # Added import
+from datetime import datetime, timezone
 from .base import RSSProvider, Feed, Article
 from core import utils
+
+log = logging.getLogger(__name__)
 
 class TheOldReaderProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
@@ -20,9 +23,9 @@ class TheOldReaderProvider(RSSProvider):
 
     def _login(self):
         if self.token:
-            print("TheOldReader: Using existing token.")
+            log.debug("TheOldReader: Using existing token.")
             return True
-        print(f"TheOldReader: Attempting login for {self.email}...")
+        log.info(f"TheOldReader: Attempting login for {self.email}...")
         try:
             resp = requests.post("https://theoldreader.com/accounts/ClientLogin", data={
                 "client": "BlindRSS",
@@ -34,29 +37,27 @@ class TheOldReaderProvider(RSSProvider):
             }, headers=utils.HEADERS)
             
             if resp.status_code != 200:
-                print(f"TheOldReader: Login Failed! Status: {resp.status_code}, Body: {resp.text[:200]}...")
+                log.error(f"TheOldReader: Login Failed! Status: {resp.status_code}, Body: {resp.text[:200]}...")
                 return False
                 
             for line in resp.text.splitlines():
                 if line.startswith("Auth="):
                     self.token = line.split("=", 1)[1]
-                    print("TheOldReader: Login Success - Token found in text.")
+                    log.info("TheOldReader: Login Success - Token found in text.")
                     return True
             
             try:
                 data = resp.json()
                 if "Auth" in data:
                     self.token = data["Auth"]
-                    print("TheOldReader: Login Success - Token found in JSON.")
+                    log.info("TheOldReader: Login Success - Token found in JSON.")
                     return True
             except: pass # Not JSON
             
-            print("TheOldReader: Login Failed! No Auth token found in response.")
+            log.error("TheOldReader: Login Failed! No Auth token found in response.")
             return False
         except Exception as e:
-            print(f"TheOldReader Login Error: {e}")
-            import traceback
-            traceback.print_exc()
+            log.exception(f"TheOldReader Login Error: {e}")
             return False
 
     def _headers(self):
@@ -67,16 +68,16 @@ class TheOldReaderProvider(RSSProvider):
 
     def refresh(self, progress_cb=None) -> bool:
         if not self._login():
-            print("TheOldReader: Refresh skipped due to login failure.")
+            log.warning("TheOldReader: Refresh skipped due to login failure.")
             return False
         return True
 
     def get_feeds(self) -> List[Feed]:
         if not self._login(): 
-            print("TheOldReader: Get Feeds skipped due to login failure.")
+            log.warning("TheOldReader: Get Feeds skipped due to login failure.")
             return []
         
-        print("TheOldReader: Fetching feeds...")
+        log.info("TheOldReader: Fetching feeds...")
         try:
             resp = requests.get(f"{self.base_url}/subscription/list", headers=self._headers(), params={"output": "json"})
             resp.raise_for_status()
@@ -103,17 +104,15 @@ class TheOldReaderProvider(RSSProvider):
                     icon_url=sub.get("iconUrl", "")
                 ))
                 feeds[-1].unread_count = counts.get(feed_id, 0)
-            print(f"TheOldReader: Found {len(feeds)} feeds.")
+            log.info(f"TheOldReader: Found {len(feeds)} feeds.")
             return feeds
         except Exception as e:
-            print(f"TheOldReader Feeds Error: {e}")
-            import traceback
-            traceback.print_exc()
+            log.exception(f"TheOldReader Feeds Error: {e}")
             return []
 
     def get_articles(self, feed_id: str) -> List[Article]:
         if not self._login(): 
-            print("TheOldReader: Login failed, cannot get articles.")
+            log.warning("TheOldReader: Login failed, cannot get articles.")
             return []
         
         try:
@@ -129,14 +128,14 @@ class TheOldReaderProvider(RSSProvider):
             url = f"{self.base_url}/stream/contents"
             params = {"output": "json", "n": 50, "s": stream_id}
             
-            print(f"TheOldReader: Fetching articles for {stream_id} -> {url} params={params}")
+            log.debug(f"TheOldReader: Fetching articles for {stream_id} -> {url} params={params}")
             resp = requests.get(url, headers=self._headers(), params=params)
-            print(f"TheOldReader: Article fetch status: {resp.status_code}. Final URL: {resp.url}")
-            resp.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            log.debug(f"TheOldReader: Article fetch status: {resp.status_code}. Final URL: {resp.url}")
+            resp.raise_for_status()
             data = resp.json()
             
             items = data.get("items", [])
-            print(f"TheOldReader: Found {len(items)} items in API response.")
+            log.info(f"TheOldReader: Found {len(items)} items in API response.")
             
             article_ids = [item["id"] for item in items]
             chapters_map = utils.get_chapters_batch(article_ids)
@@ -156,34 +155,30 @@ class TheOldReaderProvider(RSSProvider):
                         media_type = encs[0].get("type")
                 
                 article_id = item["id"]
-                # TheOldReader API uses Unix timestamp for 'published'
                 pub_timestamp = item.get("published")
-                date = "0001-01-01 00:00:00" # Default if parsing fails
+                date = "0001-01-01 00:00:00"
                 if pub_timestamp:
                     try:
-                        # Convert Unix timestamp to datetime and then normalize
                         dt = datetime.fromtimestamp(int(pub_timestamp), timezone.utc)
                         date = utils.format_datetime(dt)
-                        print(f"TheOldReader: Parsed date from {pub_timestamp} to {date}")
+                        log.debug(f"TheOldReader: Parsed date from {pub_timestamp} to {date}")
                     except Exception as date_e:
-                        print(f"TheOldReader: Date parsing error for {pub_timestamp}: {date_e}. Falling back to normalize_date.")
-                        # Fallback to general normalize_date, but pass string version
+                        log.debug(f"TheOldReader: Date parsing error for {pub_timestamp}: {date_e}. Falling back to normalize_date.")
                         date = utils.normalize_date(
-                            str(pub_timestamp), # pass as string
+                            str(pub_timestamp),
                             item.get("title", ""),
                             content,
-                            item.get("alternate", [{}])[0].get("href", "") # Pass article URL
+                            item.get("alternate", [{}])[0].get("href", "")
                         )
                 else:
-                    print("TheOldReader: 'published' field missing. Falling back to normalize_date.")
-                    # Fallback to general normalize_date if published field is missing
+                    log.debug("TheOldReader: 'published' field missing. Falling back to normalize_date.")
                     date = utils.normalize_date(
                         "",
                         item.get("title", ""),
                         content,
-                        item.get("alternate", [{}])[0].get("href", "") # Pass article URL
+                        item.get("alternate", [{}])[0].get("href", "")
                     )
-                print(f"TheOldReader: Final article date for '{item.get('title', 'N/A')[:30]}...': {date}")
+                log.debug(f"TheOldReader: Final article date for '{item.get('title', 'N/A')[:30]}...': {date}")
                 
                 chapters = chapters_map.get(article_id, [])
 
@@ -200,17 +195,13 @@ class TheOldReaderProvider(RSSProvider):
                     media_type=media_type,
                     chapters=chapters
                 ))
-            print(f"TheOldReader: Returning {len(articles)} processed articles.")
+            log.info(f"TheOldReader: Returning {len(articles)} processed articles.")
             return articles
         except requests.exceptions.HTTPError as he:
-            print(f"TheOldReader Articles HTTP Error: {he.response.status_code} - {he.response.text[:200]}")
-            import traceback
-            traceback.print_exc()
+            log.error(f"TheOldReader Articles HTTP Error: {he.response.status_code} - {he.response.text[:200]}")
             return []
         except Exception as e:
-            print(f"TheOldReader Articles General Error: {e}")
-            import traceback
-            traceback.print_exc()
+            log.exception(f"TheOldReader Articles General Error: {e}")
             return []
 
     def get_article_chapters(self, article_id: str) -> List[Dict]:
@@ -264,7 +255,7 @@ class TheOldReaderProvider(RSSProvider):
                     cats.append(label)
             return sorted(cats)
         except Exception as e:
-            print(f"TheOldReader Get Categories Error: {e}")
+            log.exception(f"TheOldReader Get Categories Error: {e}")
             return []
 
     def add_category(self, title: str) -> bool:
@@ -281,7 +272,7 @@ class TheOldReaderProvider(RSSProvider):
             })
             return resp.ok
         except Exception as e:
-            print(f"TheOldReader Rename Category Error: {e}")
+            log.exception(f"TheOldReader Rename Category Error: {e}")
             return False
 
     def delete_category(self, title: str) -> bool:
@@ -293,5 +284,5 @@ class TheOldReaderProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"TheOldReader Delete Category Error: {e}")
+            log.exception(f"TheOldReader Delete Category Error: {e}")
             return False

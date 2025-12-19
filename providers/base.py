@@ -118,3 +118,7 @@ class RSSProvider(abc.ABC):
     @abc.abstractmethod
     def delete_category(self, title: str) -> bool:
         pass
+
+    # Optional: providers that offer server-side "fetch original content" can override this.
+    def fetch_full_content(self, article_id: str, url: str = ""):
+        return None

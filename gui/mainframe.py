@@ -23,6 +23,7 @@ class MainFrame(wx.Frame):
         super().__init__(None, title="BlindRSS", size=(1000, 700))
         self.provider = provider
         self.config_manager = config_manager
+        self._refresh_guard = threading.Lock()
         self.feed_map = {}
         self.feed_nodes = {}
         self._article_refresh_pending = False
@@ -31,9 +32,14 @@ class MainFrame(wx.Frame):
         self.view_cache = {}
         self._view_cache_lock = threading.Lock()
         self.max_cached_views = int(self.config_manager.get("max_cached_views", 15))
-        
+
         self.current_feed_id = None
         self._loading_more_placeholder = False
+        # Article paging
+        self.article_page_size = 400
+        self._load_more_inflight = False
+        self._load_more_label = "Load more items (Enter)"
+        self._loading_label = "Loading more..."
         
         # Create independent player window
         self.player_window = PlayerFrame(self, config_manager)
@@ -58,7 +64,7 @@ class MainFrame(wx.Frame):
         
         # Initial load
         self.refresh_feeds()
-        self.tree.SetFocus()
+        wx.CallAfter(self._focus_default_control)
 
     def init_ui(self):
         # Main Splitter: Tree vs Content Area
@@ -66,6 +72,7 @@ class MainFrame(wx.Frame):
         
         # Left: Tree (Feeds)
         self.tree = wx.TreeCtrl(splitter, style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT | wx.TR_HAS_BUTTONS)
+        self.tree.SetName("Feeds Tree")
         self.root = self.tree.AddRoot("Root")
         self.all_feeds_node = self.tree.AppendItem(self.root, "All Feeds")
         
@@ -74,12 +81,14 @@ class MainFrame(wx.Frame):
         
         # Top Right: List (Articles)
         self.list_ctrl = wx.ListCtrl(right_splitter, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.list_ctrl.SetName("Articles List")
         self.list_ctrl.InsertColumn(0, "Title", width=400)
         self.list_ctrl.InsertColumn(1, "Date", width=150)
         self.list_ctrl.InsertColumn(2, "Author", width=150)
         
         # Bottom Right: Content (No embedded player anymore)
         self.content_ctrl = wx.TextCtrl(right_splitter, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
+        self.content_ctrl.SetName("Article Content")
         
         right_splitter.SplitHorizontally(self.list_ctrl, self.content_ctrl, 300)
         splitter.SplitVertically(self.tree, right_splitter, 250)
@@ -117,6 +126,13 @@ class MainFrame(wx.Frame):
         # Store article objects for the list
         self.current_articles = []
 
+    def _focus_default_control(self):
+        """Ensure keyboard focus lands on the tree after the frame is visible."""
+        try:
+            self.tree.SetFocus()
+        except Exception:
+            pass
+
     def _ensure_view_state(self, view_id: str):
         """Return a mutable cache dict for a view, creating it if needed.
 
@@ -135,7 +151,7 @@ class MainFrame(wx.Frame):
                     "articles": [],
                     "id_set": set(),
                     "total": None,
-                    "page_size": 200,
+                    "page_size": self.article_page_size,
                     "paged_offset": 0,
                     "fully_loaded": False,
                     "last_access": time.time(),
@@ -206,14 +222,6 @@ class MainFrame(wx.Frame):
                 args=(feed_id, self.current_request_id, False),
                 daemon=True,
             ).start()
-
-            # If the view isn't fully loaded, resume history paging from last offset.
-            if not bool(st.get("fully_loaded", False)):
-                threading.Thread(
-                    target=self._resume_history_thread,
-                    args=(feed_id, self.current_request_id),
-                    daemon=True,
-                ).start()
             return
 
         # If we have cached empty state, show it immediately and still top-up.
@@ -235,7 +243,7 @@ class MainFrame(wx.Frame):
 
     def _resume_history_thread(self, feed_id: str, request_id):
         """Continue paging older entries from the last cached offset for this view."""
-        page_size = 200
+        page_size = self.article_page_size
         try:
             st = self._ensure_view_state(feed_id)
             try:
@@ -459,14 +467,33 @@ class MainFrame(wx.Frame):
         # self.SetTitle("RSS Reader - Refreshing...") 
         threading.Thread(target=self._manual_refresh_thread, daemon=True).start()
 
-    def _manual_refresh_thread(self):
+    def _run_refresh(self, block: bool) -> bool:
+        """Run provider.refresh with optional blocking guard to avoid overlap."""
+        acquired = False
         try:
-            self.provider.refresh(self._on_feed_refresh_progress)
-            wx.CallAfter(self.refresh_feeds)
-            # wx.CallAfter(self.SetTitle, "RSS Reader")
+            acquired = self._refresh_guard.acquire(blocking=block)
+        except Exception:
+            acquired = False
+        if not acquired:
+            return False
+        try:
+            if self.provider.refresh(self._on_feed_refresh_progress):
+                wx.CallAfter(self.refresh_feeds)
+            return True
         except Exception as e:
-            print(f"Manual refresh error: {e}")
-            # wx.CallAfter(self.SetTitle, "RSS Reader")
+            print(f"Refresh error: {e}")
+            return False
+        finally:
+            try:
+                self._refresh_guard.release()
+            except Exception:
+                pass
+
+    def _manual_refresh_thread(self):
+        # Manual refresh should wait for any in-flight refresh to finish.
+        ran = self._run_refresh(block=True)
+        if not ran:
+            print("Manual refresh skipped: another refresh is running.")
 
     def on_close(self, event):
         # If user prefers closing to tray and this is a real close event, just hide
@@ -652,11 +679,9 @@ class MainFrame(wx.Frame):
         while not self.stop_event.is_set():
             interval = int(self.config_manager.get("refresh_interval", 300))
             try:
-                if self.provider.refresh(self._on_feed_refresh_progress):
-                   wx.CallAfter(self.refresh_feeds)
+                self._run_refresh(block=False)
             except Exception as e:
                 print(f"Refresh error: {e}")
-                
             # Sleep in one shot but wake early if closing
             self.stop_event.wait(interval)
 
@@ -856,10 +881,16 @@ class MainFrame(wx.Frame):
         feed_id = self._get_feed_id_from_tree_item(item)
         if not feed_id:
             return
+        
+        # If the feed hasn't changed (e.g. during a tree refresh where items are recreated),
+        # don't reset the view. The update logic (_reload_selected_articles) handles merging new items.
+        if feed_id == getattr(self, "current_feed_id", None):
+            return
+
         self._select_view(feed_id)
 
     def _load_articles_thread(self, feed_id, request_id, full_load: bool = True):
-        page_size = 200
+        page_size = self.article_page_size
         try:
             # Fast-first page
             page, total = self.provider.get_articles_page(feed_id, offset=0, limit=page_size)
@@ -873,45 +904,18 @@ class MainFrame(wx.Frame):
 
             wx.CallAfter(self._populate_articles, page, request_id, total, page_size)
 
-            offset = len(page)
-            # Background paging through the remainder
-            while True:
-                # Cancel if a newer request exists
-                if not hasattr(self, 'current_request_id') or request_id != self.current_request_id:
-                    break
-
-                if total is not None and offset >= total:
-                    break
-
-                next_page, next_total = self.provider.get_articles_page(feed_id, offset=offset, limit=page_size)
-                if total is None and next_total is not None:
-                    total = next_total
-
-                next_page = next_page or []
-                if not next_page:
-                    break
-
-                next_page.sort(key=lambda a: (utils.parse_datetime_utc(a.date).timestamp() if utils.parse_datetime_utc(a.date) else 0), reverse=True)
-
-                wx.CallAfter(self._append_articles, next_page, request_id, total, page_size)
-                offset += len(next_page)
-
-                # If the provider doesn't return total, stop on short page
-                if total is None and len(next_page) < page_size:
-                    break
-
-            wx.CallAfter(self._finish_loading_more, request_id)
-
         except Exception as e:
             print(f"Error loading articles: {e}")
             if full_load:
                 wx.CallAfter(self._populate_articles, [], request_id, 0, page_size)
             # For quick mode, just do nothing on failure.
 
-    def _populate_articles(self, articles, request_id, total=None, page_size: int = 200):
+    def _populate_articles(self, articles, request_id, total=None, page_size: int | None = None):
         # If a newer request was started, ignore this result
         if not hasattr(self, 'current_request_id') or request_id != self.current_request_id:
             return
+        if page_size is None:
+            page_size = self.article_page_size
 
         self._remove_loading_more_placeholder()
 
@@ -979,11 +983,13 @@ class MainFrame(wx.Frame):
             st['fully_loaded'] = bool(fully)
             st['last_access'] = time.time()
 
-    def _append_articles(self, articles, request_id, total=None, page_size: int = 200):
+    def _append_articles(self, articles, request_id, total=None, page_size: int | None = None):
         if not hasattr(self, 'current_request_id') or request_id != self.current_request_id:
             return
         if not articles:
             return
+        if page_size is None:
+            page_size = self.article_page_size
 
         # Deduplicate to avoid duplicates when the underlying feed shifts due to new entries.
         existing_ids = {a.id for a in getattr(self, 'current_articles', [])}
@@ -1067,10 +1073,13 @@ class MainFrame(wx.Frame):
             st['fully_loaded'] = True
             st['last_access'] = time.time()
 
-    def _add_loading_more_placeholder(self):
+    def _add_loading_more_placeholder(self, loading: bool = False):
         if getattr(self, "_loading_more_placeholder", False):
+            # If it already exists, just update the label if needed
+            self._update_loading_placeholder(self._loading_label if loading else self._load_more_label)
             return
-        idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), "Loading more...")
+        label = self._loading_label if loading else self._load_more_label
+        idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), label)
         self.list_ctrl.SetItem(idx, 1, "")
         self.list_ctrl.SetItem(idx, 2, "")
         self._loading_more_placeholder = True
@@ -1080,11 +1089,93 @@ class MainFrame(wx.Frame):
             return
         count = self.list_ctrl.GetItemCount()
         if count > 0:
-            # Only delete if the last row is our placeholder.
-            title = self.list_ctrl.GetItemText(count - 1)
-            if title == "Loading more...":
-                self.list_ctrl.DeleteItem(count - 1)
+            self.list_ctrl.DeleteItem(count - 1)
         self._loading_more_placeholder = False
+
+    def _update_loading_placeholder(self, text: str | None = None):
+        if not getattr(self, "_loading_more_placeholder", False):
+            return
+        count = self.list_ctrl.GetItemCount()
+        if count <= 0:
+            return
+        label = text or self._load_more_label
+        try:
+            self.list_ctrl.SetItem(count - 1, 0, label)
+            self.list_ctrl.SetItem(count - 1, 1, "")
+            self.list_ctrl.SetItem(count - 1, 2, "")
+        except Exception:
+            pass
+
+    def _is_load_more_row(self, idx: int) -> bool:
+        if idx is None or idx < 0:
+            return False
+        if not getattr(self, "_loading_more_placeholder", False):
+            return False
+        count = self.list_ctrl.GetItemCount()
+        if idx != count - 1:
+            return False
+        title = self.list_ctrl.GetItemText(idx)
+        return title in (self._load_more_label, self._loading_label)
+
+    def _load_more_articles(self):
+        if self._load_more_inflight:
+            return
+        if not getattr(self, "_loading_more_placeholder", False):
+            return
+        feed_id = getattr(self, "current_feed_id", None)
+        if not feed_id:
+            return
+        st = self._ensure_view_state(feed_id)
+        
+        # Robust offset calculation:
+        # 1. Use current article count as authoritative source if available.
+        # 2. Fall back to cached paged_offset.
+        # This fixes bugs where cache eviction resets paged_offset to 0, causing Page 0 duplicates.
+        current_count = len(getattr(self, "current_articles", []) or [])
+        cached_offset = int(st.get("paged_offset", 0))
+        offset = current_count if current_count > 0 else cached_offset
+
+        self._load_more_inflight = True
+        self._update_loading_placeholder(self._loading_label)
+        request_id = getattr(self, "current_request_id", None)
+        page_size = self.article_page_size
+        threading.Thread(
+            target=self._load_more_thread,
+            args=(feed_id, request_id, offset, page_size),
+            daemon=True,
+        ).start()
+
+    def _load_more_thread(self, feed_id, request_id, offset, page_size):
+        try:
+            page, total = self.provider.get_articles_page(feed_id, offset=offset, limit=page_size)
+            page = page or []
+            page.sort(
+                key=lambda a: (
+                    utils.parse_datetime_utc(a.date).timestamp() if utils.parse_datetime_utc(a.date) else 0
+                ),
+                reverse=True,
+            )
+            wx.CallAfter(self._after_load_more, page, total, request_id, page_size)
+        except Exception as e:
+            wx.CallAfter(self._load_more_failed, request_id, str(e))
+
+    def _after_load_more(self, page, total, request_id, page_size):
+        self._load_more_inflight = False
+        if not hasattr(self, "current_request_id") or request_id != self.current_request_id:
+            return
+        if not page:
+            self._finish_loading_more(request_id)
+            return
+        self._append_articles(page, request_id, total, page_size)
+
+    def _load_more_failed(self, request_id, error_msg: str):
+        self._load_more_inflight = False
+        if not hasattr(self, "current_request_id") or request_id != self.current_request_id:
+            return
+        try:
+            self._update_loading_placeholder(self._load_more_label)
+        except Exception:
+            pass
 
     def _quick_merge_articles(self, latest_page, request_id, feed_id):
         # If a newer request was started, ignore
@@ -1096,9 +1187,11 @@ class MainFrame(wx.Frame):
         if not latest_page:
             return
 
+        page_size = self.article_page_size
+
         # No prior content: behave like a normal populate
         if not getattr(self, "current_articles", None):
-            self._populate_articles(latest_page, request_id, None, 200)
+            self._populate_articles(latest_page, request_id, None, page_size)
             return
 
         existing_ids = {a.id for a in self.current_articles}
@@ -1118,12 +1211,42 @@ class MainFrame(wx.Frame):
             self.list_ctrl.SetItem(idx, 2, article.author or "")
         self.list_ctrl.Thaw()
 
+        # Enforce page-limited view based on how many history pages the user loaded.
+        try:
+            fid = getattr(self, "current_feed_id", None)
+            if fid:
+                st = self._ensure_view_state(fid)
+                paged = int(st.get("paged_offset", page_size))
+                allowed_pages = max(1, (paged + page_size - 1) // page_size)
+                allowed = allowed_pages * page_size
+                if len(self.current_articles) > allowed:
+                    self.current_articles = self.current_articles[:allowed]
+                    
+                    has_placeholder = getattr(self, "_loading_more_placeholder", False)
+                    target_count = len(self.current_articles) + (1 if has_placeholder else 0)
+                    
+                    while self.list_ctrl.GetItemCount() > target_count:
+                        try:
+                            # If placeholder exists, delete the item *before* it to preserve the "Load More" button
+                            idx_to_delete = self.list_ctrl.GetItemCount() - (2 if has_placeholder else 1)
+                            if idx_to_delete >= 0:
+                                self.list_ctrl.DeleteItem(idx_to_delete)
+                            else:
+                                break
+                        except Exception:
+                            break
+        except Exception:
+            pass
+
         # Restore selection if possible
         if selected_id:
             try:
                 for i, a in enumerate(self.current_articles):
                     if a.id == selected_id:
-                        self.list_ctrl.Select(i)
+                        # Correctly restore selection and ensure visibility so position is remembered
+                        state = wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED
+                        self.list_ctrl.SetItemState(i, state, state)
+                        self.list_ctrl.EnsureVisible(i)
                         break
             except Exception:
                 pass
@@ -1134,12 +1257,25 @@ class MainFrame(wx.Frame):
             st = self._ensure_view_state(fid)
             st['articles'] = self.current_articles
             st['id_set'] = {a.id for a in self.current_articles}
+            # Do NOT advance paged_offset here; quick top-ups shouldn't change history offset.
+            st['page_size'] = page_size
             st['last_access'] = time.time()
 
     def on_article_select(self, event):
         idx = event.GetIndex()
+        if self._is_load_more_row(idx):
+            # Keep focus on placeholder; do not try to load content
+            self.selected_article_id = None
+            self.content_ctrl.SetValue("")
+            return
         if 0 <= idx < len(self.current_articles):
             article = self.current_articles[idx]
+            
+            # Prevent flashing/resetting if the selection hasn't semantically changed
+            # (e.g. during background refresh when list indices shift).
+            if getattr(self, "selected_article_id", None) == article.id:
+                return
+
             self.selected_article_id = article.id # Track selection
             # Reset full-text state for new selection
             self._fulltext_loading_url = None
@@ -1296,6 +1432,7 @@ class MainFrame(wx.Frame):
             "fallback_html": fallback_html,
             "fallback_title": fallback_title,
             "fallback_author": fallback_author,
+            "article_id": _article_id,
             "token": token_snapshot,
         }
         self._fulltext_submit_request(req)
@@ -1307,6 +1444,16 @@ class MainFrame(wx.Frame):
             self._fulltext_worker_event.set()
         except Exception:
             pass
+
+    def _provider_fetch_full_content(self, article_id: str, url: str = ""):
+        prov = getattr(self, "provider", None)
+        if not prov or not hasattr(prov, "fetch_full_content"):
+            return None
+        try:
+            return prov.fetch_full_content(article_id, url)
+        except Exception as e:
+            print(f"Provider full-content fetch failed for {article_id}: {e}")
+            return None
 
     def _fulltext_worker_loop(self):
         while True:
@@ -1348,16 +1495,36 @@ class MainFrame(wx.Frame):
 
             err = None
             rendered = None
+
+            # Prefer client-side extraction first (web fetch).
             try:
                 rendered = article_extractor.render_full_article(
                     url,
-                    fallback_html=fallback_html,
+                    fallback_html="",
                     fallback_title=fallback_title,
                     fallback_author=fallback_author,
                 )
             except Exception as e:
                 err = str(e) or "Unknown error"
                 rendered = None
+
+            # If client extraction failed, ask provider (e.g., Miniflux fetch-content).
+            if not rendered:
+                provider_html = None
+                try:
+                    provider_html = self._provider_fetch_full_content(req.get("article_id"), url)
+                except Exception as e:
+                    if not err: err = str(e) or "Unknown error"
+                if provider_html:
+                    try:
+                        rendered = article_extractor.render_full_article(
+                            "",
+                            fallback_html=provider_html,
+                            fallback_title=fallback_title,
+                            fallback_author=fallback_author,
+                        )
+                    except Exception as e:
+                        if not err: err = str(e) or "Unknown error"
 
             if not rendered:
                 # Fallback: show feed content (cleaned) rather than a blank failure message.
@@ -1422,6 +1589,7 @@ class MainFrame(wx.Frame):
                 wx.CallAfter(apply)
             except Exception:
                 pass
+
 
     def _schedule_chapters_load(self, article):
         # Cancel previous debounce timer.
@@ -1523,9 +1691,29 @@ class MainFrame(wx.Frame):
         except Exception:
             pass
 
+    def show_and_focus_main(self, flash: bool = True):
+        """Restore window from tray/minimized state and focus the tree."""
+        try:
+            if self.IsIconized():
+                self.Iconize(False)
+            if not self.IsShown():
+                self.Show()
+            self.Raise()
+            if flash:
+                try:
+                    self.RequestUserAttention(wx.NOTIFY_WINDOW_REQUEST)
+                except Exception:
+                    pass
+            wx.CallAfter(self._focus_default_control)
+        except Exception:
+            pass
+
     def on_article_activate(self, event):
         # Double click or Enter
         idx = event.GetIndex()
+        if self._is_load_more_row(idx):
+            self._load_more_articles()
+            return
         if 0 <= idx < len(self.current_articles):
             article = self.current_articles[idx]
             
@@ -1711,7 +1899,7 @@ class MainFrame(wx.Frame):
         if dlg.ShowModal() == wx.ID_OK:
             url, cat = dlg.get_data()
             if url:
-                wx.BusyInfo("Adding feed...")
+                self.SetTitle(f"BlindRSS - Adding feed {url}...")
                 threading.Thread(target=self._add_feed_thread, args=(url, cat), daemon=True).start()
         dlg.Destroy()
         
@@ -1720,14 +1908,7 @@ class MainFrame(wx.Frame):
         wx.CallAfter(self._post_add_feed, success)
 
     def _post_add_feed(self, success):
-        # Close busy info? wx.BusyInfo is usually a window that needs to be destroyed 
-        # or it might be auto-managed if assigned to variable, but here we used it transiently
-        # which is actually bad practice as it might disappear or stay stuck.
-        # Better to not use BusyInfo without a handle, but keeping existing style for now.
-        # Actually, standard wx.BusyInfo hides when the object is destroyed. 
-        # Since we didn't keep a reference in on_add_feed, it might have destroyed immediately?
-        # Let's ignore fixing BusyInfo for now and focus on refresh.
-        
+        self.SetTitle("BlindRSS")
         self.refresh_feeds() # Refresh regardless of success to be safe/consistent
         if not success:
              wx.MessageBox("Failed to add feed.", "Error", wx.ICON_ERROR)
@@ -1745,7 +1926,7 @@ class MainFrame(wx.Frame):
         dlg = wx.FileDialog(self, "Import OPML", wildcard="OPML files (*.opml)|*.opml", style=wx.FD_OPEN)
         if dlg.ShowModal() == wx.ID_OK:
             path = dlg.GetPath()
-            # wx.BusyInfo("Importing feeds... This may take a while.") # potentially problematic
+            self.SetTitle("BlindRSS - Importing OPML...")
             threading.Thread(target=self._import_opml_thread, args=(path, target_category), daemon=True).start()
         dlg.Destroy()
 
@@ -1758,20 +1939,25 @@ class MainFrame(wx.Frame):
             traceback.print_exc()
 
     def _post_import_opml(self, success):
+        self.SetTitle("BlindRSS")
         self.refresh_feeds()
         if success:
             wx.MessageBox("Import successful.")
         else:
-            wx.MessageBox("Import failed. Please check the latest opml_debug_*.log in the application directory.")
+            wx.MessageBox("Import failed. Please check the latest opml_debug_*.log in the temporary directory.")
 
     def on_export_opml(self, event):
         dlg = wx.FileDialog(self, "Export OPML", wildcard="OPML files (*.opml)|*.opml", style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
         if dlg.ShowModal() == wx.ID_OK:
             path = dlg.GetPath()
-            if self.provider.export_opml(path):
-                wx.MessageBox("Export successful.")
-            else:
-                wx.MessageBox("Export failed.")
+            wx.BeginBusyCursor()
+            try:
+                if self.provider.export_opml(path):
+                    wx.MessageBox("Export successful.")
+                else:
+                    wx.MessageBox("Export failed.")
+            finally:
+                wx.EndBusyCursor()
         dlg.Destroy()
 
     def on_settings(self, event):
@@ -1849,7 +2035,7 @@ class MainFrame(wx.Frame):
                 cat = cat_dlg.GetStringSelection()
             cat_dlg.Destroy()
 
-            wx.BusyInfo("Adding podcast feed...")
+            self.SetTitle(f"BlindRSS - Adding podcast {url}...")
             threading.Thread(target=self._add_feed_thread, args=(url, cat), daemon=True).start()
 
     def real_close(self):

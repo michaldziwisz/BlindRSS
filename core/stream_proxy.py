@@ -254,16 +254,17 @@ class HLSConverter:
         try:
             if self.process and self.process.poll() is None:
                 self.process.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.warning(f"Failed to terminate ffmpeg process: {e}")
         try:
             if self.process:
                 self.process.wait(timeout=3)
-        except Exception:
+        except Exception as e:
+            LOG.warning(f"Error waiting for ffmpeg process: {e}")
             try:
                 self.process.kill()
-            except Exception:
-                pass
+            except Exception as k:
+                LOG.warning(f"Failed to kill ffmpeg process: {k}")
 
         self.process = None
         try:
@@ -740,8 +741,11 @@ class StreamProxy:
                         pass
 
 
+import atexit
+
 # Global instance
 _PROXY = StreamProxy()
+atexit.register(_PROXY.stop)
 
 
 def get_proxy():

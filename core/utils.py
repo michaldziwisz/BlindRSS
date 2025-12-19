@@ -79,7 +79,7 @@ def format_datetime(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def extract_date_from_text(text: str):
+def extract_date_from_text(text: str, fuzzy: bool = True):
     """
     Try multiple date patterns inside arbitrary text.
     Returns datetime or None.
@@ -113,7 +113,23 @@ def extract_date_from_text(text: str):
             return datetime(y, mth, d)
         except Exception:
             pass
-    # 3) Month name forms (e.g., May 17 2021)
+            
+    # 3) Explicit Month Name (Strict) - e.g. "Jan 1, 2020", "15 May 1999"
+    # Matches: Month DD, YYYY or DD Month YYYY
+    m_text = re.search(r"(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", text)
+    if not m_text:
+        m_text = re.search(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?,?\s+(\d{4})\b", text)
+        
+    if m_text:
+        try:
+            return dateparser.parse(m_text.group(0), tzinfos=TZINFOS)
+        except Exception:
+            pass
+
+    if not fuzzy:
+        return None
+
+    # 4) Month name forms (fuzzy fallback)
     try:
         dt = dateparser.parse(text, fuzzy=True, default=datetime(1900, 1, 1), tzinfos=TZINFOS)
         if dt and dt.year > 1900:
@@ -151,15 +167,15 @@ def normalize_date(raw_date_str: str, title: str = "", content: str = "", url: s
         # discard if more than 2 days in future (some timezones are ahead)
         return (dt_cmp - now) <= timedelta(days=2)
 
-    # 1) Check Title first (highest priority for archives)
+    # 1) Check Title first (STRICT ONLY to avoid false positives on numbers in titles)
     if title:
-        dt = extract_date_from_text(title)
+        dt = extract_date_from_text(title, fuzzy=False)
         if dt and valid(dt):
             return format_datetime(dt)
 
-    # 2) Check URL
+    # 2) Check URL (STRICT ONLY)
     if url:
-        dt = extract_date_from_text(url)
+        dt = extract_date_from_text(url, fuzzy=False)
         if dt and valid(dt):
             return format_datetime(dt)
 
@@ -172,9 +188,9 @@ def normalize_date(raw_date_str: str, title: str = "", content: str = "", url: s
         except Exception:
             pass
 
-    # 4) Check content
+    # 4) Check content (Allow fuzzy here as content often contains "Published on..." blocks)
     if content:
-        dt = extract_date_from_text(content)
+        dt = extract_date_from_text(content, fuzzy=True)
         if dt and valid(dt):
             return format_datetime(dt)
 
@@ -260,11 +276,13 @@ def humanize_article_date(date_str: str, now_utc: datetime = None) -> str:
 
 def get_chapters_from_db(article_id: str):
     conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT start, title, href FROM chapters WHERE article_id = ? ORDER BY start", (article_id,))
-    rows = c.fetchall()
-    conn.close()
-    return [{"start": r[0], "title": r[1], "href": r[2]} for r in rows]
+    try:
+        c = conn.cursor()
+        c.execute("SELECT start, title, href FROM chapters WHERE article_id = ? ORDER BY start", (article_id,))
+        rows = c.fetchall()
+        return [{"start": r[0], "title": r[1], "href": r[2]} for r in rows]
+    finally:
+        conn.close()
 
 
 def get_chapters_batch(article_ids: list) -> dict:
@@ -276,23 +294,25 @@ def get_chapters_batch(article_ids: list) -> dict:
         return {}
     
     conn = get_connection()
-    c = conn.cursor()
-    chapters_map = {}
-    
-    # SQLite limit usually 999 vars
-    chunk_size = 900
-    for i in range(0, len(article_ids), chunk_size):
-        chunk = article_ids[i:i+chunk_size]
-        placeholders = ','.join(['?'] * len(chunk))
-        c.execute(f"SELECT article_id, start, title, href FROM chapters WHERE article_id IN ({placeholders}) ORDER BY article_id, start", chunk)
-        for row in c.fetchall():
-            aid = row[0]
-            if aid not in chapters_map:
-                chapters_map[aid] = []
-            chapters_map[aid].append({"start": row[1], "title": row[2], "href": row[3]})
-            
-    conn.close()
-    return chapters_map
+    try:
+        c = conn.cursor()
+        chapters_map = {}
+        
+        # SQLite limit usually 999 vars
+        chunk_size = 900
+        for i in range(0, len(article_ids), chunk_size):
+            chunk = article_ids[i:i+chunk_size]
+            placeholders = ','.join(['?'] * len(chunk))
+            c.execute(f"SELECT article_id, start, title, href FROM chapters WHERE article_id IN ({placeholders}) ORDER BY article_id, start", chunk)
+            for row in c.fetchall():
+                aid = row[0]
+                if aid not in chapters_map:
+                    chapters_map[aid] = []
+                chapters_map[aid].append({"start": row[1], "title": row[2], "href": row[3]})
+                
+        return chapters_map
+    finally:
+        conn.close()
 
 
 def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None):
@@ -316,17 +336,19 @@ def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None
             data = resp.json()
             chapters = data.get("chapters", [])
             conn = get_connection()
-            c = conn.cursor()
-            for ch in chapters:
-                ch_id = str(uuid.uuid4())
-                start = ch.get("startTime") or ch.get("start_time") or 0
-                title_ch = ch.get("title", "")
-                href = ch.get("url") or ch.get("link")
-                c.execute("INSERT OR REPLACE INTO chapters (id, article_id, start, title, href) VALUES (?, ?, ?, ?, ?)",
-                          (ch_id, article_id, float(start), title_ch, href))
-                chapters_out.append({"start": float(start), "title": title_ch, "href": href})
-            conn.commit()
-            conn.close()
+            try:
+                c = conn.cursor()
+                for ch in chapters:
+                    ch_id = str(uuid.uuid4())
+                    start = ch.get("startTime") or ch.get("start_time") or 0
+                    title_ch = ch.get("title", "")
+                    href = ch.get("url") or ch.get("link")
+                    c.execute("INSERT OR REPLACE INTO chapters (id, article_id, start, title, href) VALUES (?, ?, ?, ?, ?)",
+                              (ch_id, article_id, float(start), title_ch, href))
+                    chapters_out.append({"start": float(start), "title": title_ch, "href": href})
+                conn.commit()
+            finally:
+                conn.close()
             if chapters_out:
                 return chapters_out
         except Exception as e:
@@ -341,25 +363,27 @@ def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None
             if resp.ok:
                 id3 = ID3(BytesIO(resp.content))
                 conn = get_connection()
-                c = conn.cursor()
-                found_any = False
-                for frame in id3.getall("CHAP"):
-                    found_any = True
-                    ch_id = str(uuid.uuid4())
-                    start = frame.start_time / 1000.0 if frame.start_time else 0
-                    title_ch = ""
-                    tit2 = frame.sub_frames.get("TIT2")
-                    if tit2 and tit2.text:
-                        title_ch = tit2.text[0]
-                    href = None
-                    # Extract URL from WXXX if needed? Usually just title.
+                try:
+                    c = conn.cursor()
+                    found_any = False
+                    for frame in id3.getall("CHAP"):
+                        found_any = True
+                        ch_id = str(uuid.uuid4())
+                        start = frame.start_time / 1000.0 if frame.start_time else 0
+                        title_ch = ""
+                        tit2 = frame.sub_frames.get("TIT2")
+                        if tit2 and tit2.text:
+                            title_ch = tit2.text[0]
+                        href = None
+                        # Extract URL from WXXX if needed? Usually just title.
+                        
+                        c.execute("INSERT OR REPLACE INTO chapters (id, article_id, start, title, href) VALUES (?, ?, ?, ?, ?)",
+                                  (ch_id, article_id, float(start), title_ch, href))
+                        chapters_out.append({"start": float(start), "title": title_ch, "href": href})
                     
-                    c.execute("INSERT OR REPLACE INTO chapters (id, article_id, start, title, href) VALUES (?, ?, ?, ?, ?)",
-                              (ch_id, article_id, float(start), title_ch, href))
-                    chapters_out.append({"start": float(start), "title": title_ch, "href": href})
-                
-                conn.commit()
-                conn.close()
+                    conn.commit()
+                finally:
+                    conn.close()
         except ImportError:
             log.info("mutagen not installed, skipping ID3 chapter parse.")
         except Exception as e:

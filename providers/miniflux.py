@@ -1,11 +1,14 @@
 import requests
 import re
+import logging
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as dateparser
 from .base import RSSProvider, Feed, Article
 from core import utils
+
+log = logging.getLogger(__name__)
 
 class MinifluxProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
@@ -16,9 +19,13 @@ class MinifluxProvider(RSSProvider):
         self.base_url = re.sub(r'/v1/?$', '', url)
         self.headers = {
             "X-Auth-Token": self.conf.get("api_key", ""),
+            "Accept": "application/json",
         }
         # Merge with default browser headers for better compatibility
+        # Keep Miniflux API responses in JSON by overriding Accept above.
         self.headers.update(utils.HEADERS)
+        # Ensure Accept stays JSON for API calls.
+        self.headers["Accept"] = "application/json"
         
     def get_name(self) -> str:
         return "Miniflux"
@@ -45,11 +52,18 @@ class MinifluxProvider(RSSProvider):
             try:
                 return resp.json()
             except ValueError:
-                print(f"Miniflux JSON error for {url}. Status: {resp.status_code}")
+                log.error(f"Miniflux JSON error for {url}. Status: {resp.status_code}")
                 return None
 
+        except requests.HTTPError as e:
+            # Silence 500 on refresh as it's often a transient server/feed issue.
+            if e.response is not None and e.response.status_code == 500 and "refresh" in endpoint:
+                log.warning(f"Miniflux refresh failed for {url} (500). Server might be overloaded or feed is broken.")
+            else:
+                log.error(f"Miniflux error for {url}: {e}")
+            return None
         except Exception as e:
-            print(f"Miniflux error for {url}: {e}")
+            log.error(f"Miniflux error for {url}: {e}")
             return None
 
     def _get_entries_paged(self, endpoint: str, params: Dict[str, Any] = None, limit: int = 200) -> List[Dict[str, Any]]:
@@ -174,7 +188,60 @@ class MinifluxProvider(RSSProvider):
         return articles
 
     def refresh(self, progress_cb=None) -> bool:
+        # Kick off a global refresh on the Miniflux server.
         self._req("PUT", "/v1/feeds/refresh")
+
+        # After triggering, fetch feed metadata so we can surface stale/error
+        # feeds in the UI and optionally retry them individually.
+        feeds = self._req("GET", "/v1/feeds") or []
+        counters_data = self._req("GET", "/v1/feeds/counters") or {}
+        unread_map = counters_data.get("unreads", {}) if isinstance(counters_data, dict) else {}
+
+        now = datetime.now(timezone.utc)
+        stale_cutoff = now - timedelta(hours=3)
+        retry_budget = 15  # avoid hammering the server if many feeds are failing
+
+        for feed in feeds:
+            feed_id = str(feed.get("id"))
+            category = (feed.get("category") or {}).get("title", "Uncategorized")
+            unread = unread_map.get(feed_id) or unread_map.get(int(feed.get("id", 0) or 0), 0) or 0
+
+            status = "ok"
+            error_msg = None
+
+            checked_at = feed.get("checked_at")
+            checked_dt = None
+            if checked_at:
+                try:
+                    checked_dt = dateparser.parse(checked_at)
+                    if checked_dt and checked_dt.tzinfo is None:
+                        checked_dt = checked_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    checked_dt = None
+
+            if (feed.get("parsing_error_count") or 0) > 0:
+                status = "error"
+                error_msg = feed.get("parsing_error_message")
+            elif checked_dt and checked_dt < stale_cutoff:
+                status = "stale"
+
+            state = {
+                "id": feed_id,
+                "title": feed.get("title") or "",
+                "category": category,
+                "unread_count": unread,
+                "status": status,
+                "new_items": None,
+                "error": error_msg,
+            }
+            self._emit_progress(progress_cb, state)
+
+            # If Miniflux reports an error or the feed hasn't been checked in a while,
+            # re-issue a per-feed refresh to force an immediate retry.
+            if status in ("error", "stale") and retry_budget > 0:
+                self._req("PUT", f"/v1/feeds/{feed_id}/refresh")
+                retry_budget -= 1
+
         return True
 
     def get_feeds(self) -> List[Feed]:
@@ -388,14 +455,66 @@ class MinifluxProvider(RSSProvider):
     def delete_category(self, title: str) -> bool:
         data = self._req("GET", "/v1/categories")
         if not data: return False
-        
+
         cat_id = None
         for c in data:
             if c["title"] == title:
                 cat_id = c["id"]
                 break
-        
+
         if cat_id:
             self._req("DELETE", f"/v1/categories/{cat_id}")
             return True
         return False
+
+    def fetch_full_content(self, article_id: str, url: str = ""):
+        """Return raw HTML fetched by Miniflux server-side fetch-content.
+
+        Behavior:
+        - Uses PUT /v1/entries/{id}/fetch-content (Miniflux requirement).
+        - Swallows 404 (entry not found/expired) quietly to avoid noisy logs.
+        - Returns the updated entry's content on success, otherwise None.
+        """
+        if not article_id:
+            return None
+
+        try:
+            # Some instances require numeric IDs; coerce when possible.
+            aid = int(str(article_id))
+        except Exception:
+            aid = article_id
+
+        try:
+            # Direct request so we can selectively silence 404s.
+            resp = requests.put(
+                f"{self.base_url}/v1/entries/{aid}/fetch-content",
+                headers=self.headers,
+                timeout=15,
+            )
+
+            if resp.status_code == 404:
+                # Entry no longer exists on the server; just fall back.
+                return None
+
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                content = data.get("content")
+                if content:
+                    return content
+        except requests.HTTPError as e:
+            # Only surface non-404 errors.
+            code = getattr(e.response, "status_code", None)
+            if code and code != 404:
+                log.error(f"Miniflux fetch-content HTTP error for {article_id}: {e}")
+        except Exception as e:
+            log.error(f"Miniflux fetch-content error for {article_id}: {e}")
+        return None
+
+    def _emit_progress(self, progress_cb, state):
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(state)
+        except Exception as e:
+            log.error(f"Miniflux progress callback failed: {e}")

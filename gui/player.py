@@ -77,7 +77,42 @@ class CastDialog(wx.Dialog):
         sel = self.list_box.GetSelection()
         if sel != wx.NOT_FOUND and sel < len(self.devices):
             self.selected_device = self.devices[sel]
+            
+            # Disable UI while connecting
+            self.list_box.Disable()
+            self.FindWindowByLabel("Connect").Disable()
+            self.FindWindowByLabel("Refresh").Disable()
+            self.FindWindowByLabel("Cancel").Disable()
+            
+            # Show busy cursor
+            wx.BeginBusyCursor()
+            
+            threading.Thread(target=self._connect_thread, args=(self.selected_device,), daemon=True).start()
+
+    def _connect_thread(self, device):
+        success = False
+        try:
+            # This blocks the thread, not the GUI
+            self.manager.connect(device)
+            success = True
+        except Exception as e:
+            wx.CallAfter(self._on_connect_error, str(e))
+        finally:
+            wx.CallAfter(self._on_connect_complete, success)
+
+    def _on_connect_error(self, error_msg):
+        wx.MessageBox(f"Connection failed: {error_msg}", "Error", wx.ICON_ERROR)
+
+    def _on_connect_complete(self, success):
+        wx.EndBusyCursor()
+        if success:
             self.EndModal(wx.ID_OK)
+        else:
+            # Re-enable UI
+            self.list_box.Enable()
+            self.FindWindowByLabel("Connect").Enable()
+            self.FindWindowByLabel("Refresh").Enable()
+            self.FindWindowByLabel("Cancel").Enable()
 
     def on_cancel(self, event):
         self.EndModal(wx.ID_CANCEL)
@@ -447,6 +482,7 @@ class PlayerFrame(wx.Frame):
         
         # Slider
         self.slider = wx.Slider(panel, value=0, minValue=0, maxValue=1000)
+        self.slider.SetName("Playback Position")
         # FIX: Separate tracking (dragging) from release (seeking)
         self.slider.Bind(wx.EVT_SCROLL_THUMBTRACK, self.on_slider_track)
         self.slider.Bind(wx.EVT_SCROLL_THUMBRELEASE, self.on_slider_release)
@@ -469,6 +505,7 @@ class PlayerFrame(wx.Frame):
         
         # Rewind 10s
         rewind_btn = wx.Button(panel, label="-10s")
+        rewind_btn.SetName("Rewind 10 seconds")
         rewind_btn.Bind(wx.EVT_BUTTON, self.on_rewind)
         btn_sizer.Add(rewind_btn, 0, wx.ALL, 5)
         
@@ -484,12 +521,14 @@ class PlayerFrame(wx.Frame):
         
         # Forward 10s
         forward_btn = wx.Button(panel, label="+10s")
+        forward_btn.SetName("Fast Forward 10 seconds")
         forward_btn.Bind(wx.EVT_BUTTON, self.on_forward)
         btn_sizer.Add(forward_btn, 0, wx.ALL, 5)
         
         # Speed
         speeds = utils.build_playback_speeds()
         self.speed_combo = wx.ComboBox(panel, choices=[f"{s}x" for s in speeds], style=wx.CB_READONLY)
+        self.speed_combo.SetName("Playback Speed")
         self.speed_combo.Bind(wx.EVT_COMBOBOX, self.on_speed_select)
         btn_sizer.Add(self.speed_combo, 0, wx.ALL, 5)
         
@@ -502,6 +541,7 @@ class PlayerFrame(wx.Frame):
         
         # Chapters
         self.chapter_choice = wx.ComboBox(panel, style=wx.CB_READONLY)
+        self.chapter_choice.SetName("Chapters")
         self.chapter_choice.Bind(wx.EVT_COMBOBOX, self.on_chapter_select)
         sizer.Add(self.chapter_choice, 0, wx.EXPAND | wx.ALL, 5)
         

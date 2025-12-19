@@ -6,51 +6,6 @@ from core import utils
 from core.casting import CastingManager
 
 
-class CastDialog(wx.Dialog):
-    def __init__(self, parent, casting_manager: CastingManager):
-        super().__init__(parent, title="Select Casting Device", size=(400, 300))
-
-        self.casting_manager = casting_manager
-        self.selected_device = None
-
-        sizer = wx.BoxSizer(wx.VERTICAL)
-
-        sizer.Add(wx.StaticText(self, label="Select a device to cast to:"), 0, wx.ALL, 5)
-
-        self.device_list = wx.ListBox(self, size=(380, 200))
-        self.device_list.Bind(wx.EVT_LISTBOX_DCLICK, self.on_ok)
-        sizer.Add(self.device_list, 1, wx.EXPAND | wx.ALL, 5)
-
-        btn_sizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
-        sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 5)
-
-        self.SetSizer(sizer)
-        self.Centre()
-
-        self.load_devices()
-
-    def load_devices(self):
-        try:
-            print("DEBUG: Discovering devices...")
-            devices = self.casting_manager.discover_devices()
-            print(f"DEBUG: Found {len(devices)} devices: {[d.name for d in devices]}")
-            self.device_list.Clear()
-            for device in devices:
-                print(f"DEBUG: Device: {device.name} type: {device.type} host: {device.host}")
-                self.device_list.Append(f"{device.name} ({device.type})", device)
-        except Exception as e:
-            print(f"DEBUG: Discovery failed: {e}")
-            wx.MessageBox(f"Failed to discover devices: {e}", "Error", wx.ICON_ERROR)
-
-    def on_ok(self, event):
-        idx = self.device_list.GetSelection()
-        if idx != wx.NOT_FOUND:
-            self.selected_device = self.device_list.GetClientData(idx)
-            self.EndModal(wx.ID_OK)
-        else:
-            wx.MessageBox("Please select a device.", "Error", wx.ICON_ERROR)
-
-
 class AddFeedDialog(wx.Dialog):
     def __init__(self, parent, categories=None):
         super().__init__(parent, title="Add Feed", size=(400, 200))
@@ -437,29 +392,55 @@ class PodcastSearchDialog(wx.Dialog):
         self.results_list.DeleteAllItems()
         self.results_data = []
         
+        # Disable UI
+        self.search_ctrl.Disable()
+        self.FindWindowByLabel("Search").Disable()
+        wx.BeginBusyCursor()
+        
+        import threading
+        threading.Thread(target=self._search_thread, args=(term,), daemon=True).start()
+
+    def _search_thread(self, term):
         import requests
         import urllib.parse
+        
+        data = None
+        error = None
         
         try:
             url = f"https://itunes.apple.com/search?media=podcast&term={urllib.parse.quote(term)}"
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            
-            for item in data.get("results", []):
-                title = item.get("collectionName", "Unknown")
-                author = item.get("artistName", "Unknown")
-                feed_url = item.get("feedUrl")
-                
-                if feed_url:
-                    self.results_data.append({"title": title, "author": author, "url": feed_url})
-                    
-            for i, item in enumerate(self.results_data):
-                idx = self.results_list.InsertItem(i, item["title"])
-                self.results_list.SetItem(idx, 1, item["author"])
-                
         except Exception as e:
-            wx.MessageBox(f"Search failed: {e}", "Error", wx.ICON_ERROR)
+            error = str(e)
+            
+        wx.CallAfter(self._on_search_complete, data, error)
+
+    def _on_search_complete(self, data, error):
+        wx.EndBusyCursor()
+        self.search_ctrl.Enable()
+        self.FindWindowByLabel("Search").Enable()
+        self.search_ctrl.SetFocus()
+        
+        if error:
+            wx.MessageBox(f"Search failed: {error}", "Error", wx.ICON_ERROR)
+            return
+
+        if not data:
+            return
+
+        for item in data.get("results", []):
+            title = item.get("collectionName", "Unknown")
+            author = item.get("artistName", "Unknown")
+            feed_url = item.get("feedUrl")
+            
+            if feed_url:
+                self.results_data.append({"title": title, "author": author, "url": feed_url})
+                
+        for i, item in enumerate(self.results_data):
+            idx = self.results_list.InsertItem(i, item["title"])
+            self.results_list.SetItem(idx, 1, item["author"])
 
     def on_item_activated(self, event):
         # Select item and close

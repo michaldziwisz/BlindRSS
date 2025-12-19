@@ -1,6 +1,9 @@
 import json
 import os
 import sys
+import logging
+
+log = logging.getLogger(__name__)
 
 # When frozen (PyInstaller) use the exe directory; otherwise use the directory
 # of the main script so config.json stays alongside the app regardless of
@@ -11,6 +14,7 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+# ... (rest of the file)
 
 DEFAULT_CONFIG = {
     "max_downloads": 32,
@@ -80,18 +84,22 @@ DEFAULT_CONFIG = {
 }
 
 
+import threading
+
 class ConfigManager:
     def __init__(self):
+        self._lock = threading.Lock()
         self.config = self.load_config()
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f:
-                    loaded = json.load(f)
-                    return self._apply_defaults(loaded)
+                with self._lock:
+                    with open(CONFIG_FILE, 'r') as f:
+                        loaded = json.load(f)
+                        return self._apply_defaults(loaded)
             except Exception as e:
-                print(f"Error loading config: {e}")
+                log.error(f"Error loading config: {e}")
                 return DEFAULT_CONFIG
         return DEFAULT_CONFIG
 
@@ -114,10 +122,11 @@ class ConfigManager:
 
     def save_config(self):
         try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(self.config, f, indent=4)
+            with self._lock:
+                with open(CONFIG_FILE, 'w') as f:
+                    json.dump(self.config, f, indent=4)
         except Exception as e:
-            print(f"Error saving config: {e}")
+            log.error(f"Error saving config: {e}")
 
     def get(self, key, default=None):
         return self.config.get(key, default)

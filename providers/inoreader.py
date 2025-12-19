@@ -1,7 +1,10 @@
 import requests
+import logging
 from typing import List, Dict, Any
 from .base import RSSProvider, Feed, Article
 from core import utils
+
+log = logging.getLogger(__name__)
 
 class InoreaderProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
@@ -44,7 +47,7 @@ class InoreaderProvider(RSSProvider):
                 ))
             return feeds
         except Exception as e:
-            print(f"Inoreader Feeds Error: {e}")
+            log.error(f"Inoreader Feeds Error: {e}")
             return []
 
     def get_articles(self, feed_id: str) -> List[Article]:
@@ -101,7 +104,7 @@ class InoreaderProvider(RSSProvider):
                 ))
             return articles
         except Exception as e:
-            print(f"Inoreader Articles Error: {e}")
+            log.error(f"Inoreader Articles Error: {e}")
             return []
 
     def get_article_chapters(self, article_id: str) -> List[Dict]:
@@ -122,7 +125,7 @@ class InoreaderProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"Inoreader Mark Read Error: {e}")
+            log.error(f"Inoreader Mark Read Error: {e}")
             return False
 
     def add_feed(self, url: str, category: str = None) -> bool:
@@ -139,7 +142,7 @@ class InoreaderProvider(RSSProvider):
             resp.raise_for_status()
             return True
         except Exception as e:
-            print(f"Inoreader Add Feed Error: {e}")
+            log.error(f"Inoreader Add Feed Error: {e}")
             return False
 
     def remove_feed(self, feed_id: str) -> bool:
@@ -151,7 +154,7 @@ class InoreaderProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"Inoreader Remove Feed Error: {e}")
+            log.error(f"Inoreader Remove Feed Error: {e}")
             return False
 
     def get_categories(self) -> List[str]:
@@ -168,7 +171,7 @@ class InoreaderProvider(RSSProvider):
                     cats.append(label)
             return sorted(cats)
         except Exception as e:
-            print(f"Inoreader Get Categories Error: {e}")
+            log.error(f"Inoreader Get Categories Error: {e}")
             return []
 
     def add_category(self, title: str) -> bool:
@@ -185,7 +188,7 @@ class InoreaderProvider(RSSProvider):
             })
             return resp.ok
         except Exception as e:
-            print(f"Inoreader Rename Category Error: {e}")
+            log.error(f"Inoreader Rename Category Error: {e}")
             return False
 
     def delete_category(self, title: str) -> bool:
@@ -197,5 +200,5 @@ class InoreaderProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"Inoreader Delete Category Error: {e}")
+            log.error(f"Inoreader Delete Category Error: {e}")
             return False

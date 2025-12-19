@@ -1,7 +1,10 @@
 import requests
+import logging
 from typing import List, Dict, Any
 from .base import RSSProvider, Feed, Article
 from core import utils
+
+log = logging.getLogger(__name__)
 
 class BazQuxProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
@@ -31,7 +34,7 @@ class BazQuxProvider(RSSProvider):
                     return True
             return False
         except Exception as e:
-            print(f"BazQux Login Error: {e}")
+            log.error(f"BazQux Login Error: {e}")
             return False
 
     def _headers(self):
@@ -65,7 +68,7 @@ class BazQuxProvider(RSSProvider):
                 ))
             return feeds
         except Exception as e:
-            print(f"BazQux Feeds Error: {e}")
+            log.error(f"BazQux Feeds Error: {e}")
             return []
 
     def get_articles(self, feed_id: str) -> List[Article]:
@@ -118,7 +121,7 @@ class BazQuxProvider(RSSProvider):
                 ))
             return articles
         except Exception as e:
-            print(f"BazQux Articles Error: {e}")
+            log.error(f"BazQux Articles Error: {e}")
             return []
 
     def get_article_chapters(self, article_id: str) -> List[Dict]:
@@ -133,7 +136,7 @@ class BazQuxProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"BazQux Mark Read Error: {e}")
+            log.error(f"BazQux Mark Read Error: {e}")
             return False
 
     def add_feed(self, url: str, category: str = None) -> bool:
@@ -150,7 +153,7 @@ class BazQuxProvider(RSSProvider):
             resp.raise_for_status()
             return True
         except Exception as e:
-            print(f"BazQux Add Feed Error: {e}")
+            log.error(f"BazQux Add Feed Error: {e}")
             return False
 
     def remove_feed(self, feed_id: str) -> bool:
@@ -162,7 +165,7 @@ class BazQuxProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"BazQux Remove Feed Error: {e}")
+            log.error(f"BazQux Remove Feed Error: {e}")
             return False
 
     def get_categories(self) -> List[str]:
@@ -180,7 +183,7 @@ class BazQuxProvider(RSSProvider):
                     cats.append(label)
             return sorted(cats)
         except Exception as e:
-            print(f"BazQux Get Categories Error: {e}")
+            log.error(f"BazQux Get Categories Error: {e}")
             return []
 
     def add_category(self, title: str) -> bool:
@@ -204,7 +207,7 @@ class BazQuxProvider(RSSProvider):
             })
             return resp.ok
         except Exception as e:
-            print(f"BazQux Rename Category Error: {e}")
+            log.error(f"BazQux Rename Category Error: {e}")
             return False
 
     def delete_category(self, title: str) -> bool:
@@ -216,5 +219,5 @@ class BazQuxProvider(RSSProvider):
             })
             return True
         except Exception as e:
-            print(f"BazQux Delete Category Error: {e}")
+            log.error(f"BazQux Delete Category Error: {e}")
             return False

@@ -481,7 +481,8 @@ class _Entry:
 
                 if aborted or bytes_written != expected_len:
                     # Partial/Aborted download: save what we got!
-                    if bytes_written > 0:
+                    # Only save if we got a meaningful amount (e.g. > 4KB) to avoid cache fragmentation.
+                    if bytes_written > 4096:
                         actual_end = served_start + bytes_written - 1
                         print(f"PROXY_DEBUG: Saving partial chunk {served_start}-{actual_end}")
                         self._finalize_chunk(tmp_path, served_start, actual_end)

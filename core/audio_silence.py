@@ -314,7 +314,11 @@ def scan_audio_for_silence(
                 proc.stderr.read()
         except Exception:
             pass
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
     finally:
         try:
             if proc.stdout:
