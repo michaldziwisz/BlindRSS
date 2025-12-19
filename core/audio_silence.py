@@ -256,7 +256,18 @@ def scan_audio_for_silence(
     """
     if not source:
         return []
+    
+    # Ensure PATH is set up for FFmpeg detection
+    try:
+        from .dependency_check import _maybe_add_windows_path, _log
+        _maybe_add_windows_path()
+        _log(f"Starting silence scan for: {source}")
+    except Exception:
+        def _log(m): pass
+        pass
+
     if not shutil.which(ffmpeg_bin):
+        _log(f"Silence scan failed: {ffmpeg_bin} not found in PATH")
         raise FileNotFoundError("ffmpeg not found in PATH")
 
     cmd = [
@@ -275,7 +286,23 @@ def scan_audio_for_silence(
         "s16le",
         "-",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    import platform
+    creationflags = 0
+    startupinfo = None
+    if platform.system().lower() == "windows":
+        creationflags = 0x08000000 # CREATE_NO_WINDOW
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0 # SW_HIDE
+
+    proc = subprocess.Popen(
+        cmd, 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+        startupinfo=startupinfo
+    )
     use_vad = (detection_mode == "vad")
     if use_vad and webrtcvad is None:
         raise RuntimeError("webrtcvad not available; install the webrtcvad package")

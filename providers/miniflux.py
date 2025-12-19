@@ -5,7 +5,8 @@ from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from dateutil import parser as dateparser
-from .base import RSSProvider, Feed, Article
+from .base import RSSProvider
+from core.models import Feed, Article
 from core import utils
 
 log = logging.getLogger(__name__)
@@ -56,9 +57,10 @@ class MinifluxProvider(RSSProvider):
                 return None
 
         except requests.HTTPError as e:
-            # Silence 500 on refresh as it's often a transient server/feed issue.
-            if e.response is not None and e.response.status_code == 500 and "refresh" in endpoint:
-                log.warning(f"Miniflux refresh failed for {url} (500). Server might be overloaded or feed is broken.")
+            # Silence 500 on refresh or general list endpoints as it's often a transient server issue.
+            is_silent_endpoint = any(x in endpoint for x in ("refresh", "/feeds", "/entries"))
+            if e.response is not None and e.response.status_code == 500 and is_silent_endpoint:
+                log.warning(f"Miniflux endpoint failed for {url} (500). Server might be overloaded.")
             else:
                 log.error(f"Miniflux error for {url}: {e}")
             return None
@@ -396,6 +398,12 @@ class MinifluxProvider(RSSProvider):
         return True
 
     def add_feed(self, url: str, category: str = "Uncategorized") -> bool:
+        from core.discovery import get_ytdlp_feed_url, discover_feed
+        
+        # Try to get native feed URL for media sites (e.g. YouTube)
+        # Miniflux can sometimes fail to discover these natively, leading to 500 errors.
+        real_url = get_ytdlp_feed_url(url) or discover_feed(url) or url
+        
         cats = self._req("GET", "/v1/categories")
         if not cats:
             return False
@@ -407,7 +415,7 @@ class MinifluxProvider(RSSProvider):
                     category_id = c["id"]
                     break
         
-        data = {"feed_url": url, "category_id": category_id}
+        data = {"feed_url": real_url, "category_id": category_id}
         res = self._req("POST", "/v1/feeds", json=data)
         return res is not None
 

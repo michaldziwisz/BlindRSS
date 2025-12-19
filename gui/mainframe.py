@@ -16,6 +16,7 @@ from providers.base import RSSProvider
 from core.config import APP_DIR
 from core import utils
 from core import article_extractor
+import core.discovery
 
 
 class MainFrame(wx.Frame):
@@ -47,6 +48,9 @@ class MainFrame(wx.Frame):
         # Custom hold-to-repeat for media keys (prevents multi-seek on quick tap)
         self._media_hotkeys = HoldRepeatHotkeys(self, hold_delay_s=2.0, repeat_interval_s=0.12, poll_interval_ms=15)
         
+        self._updating_list = False # Flag to ignore selection events during background updates
+        self.selected_article_id = None
+
         self.init_ui()
         self.init_menus()
         self.init_shortcuts()
@@ -668,6 +672,7 @@ class MainFrame(wx.Frame):
             data = self.tree.GetItemData(item)
             if data and data["type"] == "category":
                 if wx.MessageBox(f"Remove category '{self.tree.GetItemText(item)}'? Feeds will be moved to Uncategorized.", "Confirm", wx.YES_NO) == wx.YES:
+                    self._selection_hint = {"type": "all", "id": "all"}
                     if self.provider.delete_category(data["id"]):
                         self.refresh_feeds()
                     else:
@@ -755,6 +760,12 @@ class MainFrame(wx.Frame):
         if selected_item.IsOk():
             selected_data = self.tree.GetItemData(selected_item)
 
+        # Use selection hint if present (e.g. after deletion)
+        hint = getattr(self, "_selection_hint", None)
+        if hint:
+            selected_data = hint
+            self._selection_hint = None
+
         self.tree.Freeze() # Stop updates while rebuilding
         self.tree.DeleteChildren(self.all_feeds_node)
         self.tree.DeleteChildren(self.root)
@@ -782,6 +793,9 @@ class MainFrame(wx.Frame):
 
         for cat in sorted_cats:
             cat_feeds = categories[cat]
+            # Sort feeds alphabetically by title
+            cat_feeds.sort(key=lambda f: (f.title or "").lower())
+            
             cat_node = self.tree.AppendItem(self.root, cat)
             cat_data = {"type": "category", "id": cat}
             self.tree.SetItemData(cat_node, cat_data)
@@ -813,7 +827,12 @@ class MainFrame(wx.Frame):
             selection_target = self.all_feeds_node
 
         if selection_target and selection_target.IsOk():
-            self.tree.SelectItem(selection_target)
+            # Select silently to avoid triggering EVT_TREE_SEL_CHANGED -> _select_view
+            self._updating_list = True
+            try:
+                self.tree.SelectItem(selection_target)
+            finally:
+                self._updating_list = False
 
         self.tree.Thaw() # Resume updates
 
@@ -1201,15 +1220,41 @@ class MainFrame(wx.Frame):
 
         # Remember selection by article id if possible
         selected_id = getattr(self, "selected_article_id", None)
+        
+        # Check if the list currently has keyboard focus
+        list_had_focus = (wx.Window.FindFocus() == self.list_ctrl)
 
-        self.current_articles = new_entries + self.current_articles
+        self._updating_list = True
+        try:
+            self.current_articles = new_entries + self.current_articles
 
-        self.list_ctrl.Freeze()
-        for i, article in enumerate(new_entries):
-            idx = self.list_ctrl.InsertItem(i, article.title)
-            self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
-            self.list_ctrl.SetItem(idx, 2, article.author or "")
-        self.list_ctrl.Thaw()
+            self.list_ctrl.Freeze()
+            for i, article in enumerate(new_entries):
+                # InsertItem at top pushes existing selection down, but fires events.
+                # Our _updating_list flag will silence on_article_select.
+                idx = self.list_ctrl.InsertItem(i, article.title)
+                self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
+                self.list_ctrl.SetItem(idx, 2, article.author or "")
+            
+            # Restore selection state without stealing focus
+            if selected_id:
+                for i, a in enumerate(self.current_articles):
+                    if a.id == selected_id:
+                        # Set selection silently
+                        self.list_ctrl.SetItemState(i, wx.LIST_STATE_SELECTED, wx.LIST_STATE_SELECTED)
+                        # Only restore focus state if the list actually had focus, 
+                        # otherwise screen readers might jump back to the list.
+                        if list_had_focus:
+                            self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+                        
+                        # Ensure visible only if it was already selected/focused
+                        # (prevents random scrolling in background)
+                        if list_had_focus:
+                            self.list_ctrl.EnsureVisible(i)
+                        break
+            self.list_ctrl.Thaw()
+        finally:
+            self._updating_list = False
 
         # Enforce page-limited view based on how many history pages the user loaded.
         try:
@@ -1238,19 +1283,6 @@ class MainFrame(wx.Frame):
         except Exception:
             pass
 
-        # Restore selection if possible
-        if selected_id:
-            try:
-                for i, a in enumerate(self.current_articles):
-                    if a.id == selected_id:
-                        # Correctly restore selection and ensure visibility so position is remembered
-                        state = wx.LIST_STATE_SELECTED | wx.LIST_STATE_FOCUSED
-                        self.list_ctrl.SetItemState(i, state, state)
-                        self.list_ctrl.EnsureVisible(i)
-                        break
-            except Exception:
-                pass
-
         # Update cache for this view (do not reset paging offset)
         fid = getattr(self, 'current_feed_id', None)
         if fid:
@@ -1262,6 +1294,9 @@ class MainFrame(wx.Frame):
             st['last_access'] = time.time()
 
     def on_article_select(self, event):
+        if self._updating_list:
+            return
+            
         idx = event.GetIndex()
         if self._is_load_more_row(idx):
             # Keep focus on placeholder; do not try to load content
@@ -1718,12 +1753,27 @@ class MainFrame(wx.Frame):
             article = self.current_articles[idx]
             
             if self._should_play_in_player(article):
-                is_youtube = (article.media_type or "").lower() == "video/youtube"
+                # Decision logic for which URL to play
+                media_url = article.media_url
+                use_ytdlp = (article.media_type or "").lower() == "video/youtube"
+                
+                # If main URL is yt-dlp supported, prefer it! 
+                # This fixes the bug where we accidentally play the thumbnail enclosure.
+                if article.url and core.discovery.is_ytdlp_supported(article.url):
+                    media_url = article.url
+                    use_ytdlp = True
+                elif not media_url and article.url:
+                    # Fallback
+                    media_url = article.url
+
+                if not media_url:
+                    return
+
                 # Use cached chapters if available
                 chapters = getattr(article, "chapters", None)
                 
                 # Start playback immediately (avoid blocking)
-                self.player_window.load_media(article.media_url, is_youtube, chapters, title=getattr(article, "title", None))
+                self.player_window.load_media(media_url, use_ytdlp, chapters, title=getattr(article, "title", None))
 
                 # Respect the preference for showing/hiding the player on playback
                 if bool(self.config_manager.get("show_player_on_play", True)):
@@ -1750,19 +1800,34 @@ class MainFrame(wx.Frame):
 
     def _should_play_in_player(self, article):
         """Only treat bona-fide podcast/media items as playable; everything else opens in browser."""
-        if not article.media_url:
-            return False
-        media_type = (article.media_type or "").lower()
-        url = article.media_url.lower()
-        audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
         
-        if media_type.startswith(("audio/", "video/")) or "podcast" in media_type:
+        # 1. Check main URL for yt-dlp compatibility first (high priority)
+        # This covers YouTube, Twitch, etc. even if they have thumbnail enclosures.
+        if article.url and core.discovery.is_ytdlp_supported(article.url):
+            # Safe-reject if the main URL is explicitly an image
+            url_low = article.url.lower()
+            if any(url_low.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]):
+                return False
             return True
-        if media_type == "video/youtube":
-            return True
-        # Some feeds mislabel audio; fall back to extension sniffing
-        if url.endswith(audio_exts):
-            return True
+
+        # 2. Check direct media attachments
+        if article.media_url:
+            media_type = (article.media_type or "").lower()
+            url = article.media_url.lower()
+            audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
+            
+            # Reject common image extensions unless yt-dlp explicitly supports them (unlikely for enclosures)
+            if any(url.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]):
+                if not core.discovery.is_ytdlp_supported(article.media_url):
+                    return False
+
+            if media_type.startswith(("audio/", "video/")) or "podcast" in media_type:
+                return True
+            if media_type == "video/youtube":
+                return True
+            if url.endswith(audio_exts):
+                return True
+
         return False
 
     def on_download_article(self, article):
@@ -1919,6 +1984,20 @@ class MainFrame(wx.Frame):
             data = self.tree.GetItemData(item)
             if data and data["type"] == "feed":
                 if wx.MessageBox("Are you sure you want to remove this feed?", "Confirm", wx.YES_NO) == wx.YES:
+                    # Logic to find the "next" best item to focus (alphabetical neighbor)
+                    # Try next sibling first, then previous sibling
+                    next_item = self.tree.GetNextSibling(item)
+                    if not next_item or not next_item.IsOk():
+                        next_item = self.tree.GetPrevSibling(item)
+                    
+                    if next_item and next_item.IsOk():
+                        self._selection_hint = self.tree.GetItemData(next_item)
+                    else:
+                        # Fallback to category if it was the only feed
+                        parent = self.tree.GetItemParent(item)
+                        if parent.IsOk():
+                            self._selection_hint = self.tree.GetItemData(parent)
+
                     self.provider.remove_feed(data["id"])
                     self.refresh_feeds()
 

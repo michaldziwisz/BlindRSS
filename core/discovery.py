@@ -1,7 +1,118 @@
 import requests
+import subprocess
+import json
+import platform
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs
 from core import utils
+
+
+def is_ytdlp_supported(url: str) -> bool:
+    """Check if yt-dlp supports this URL without doing a full extract."""
+    if not url:
+        return False
+    
+    # Quick check for known domains to avoid spawning process for every character
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    if not domain:
+        return False
+        
+    known_domains = [
+        "youtube.com", "youtu.be", "vimeo.com", "twitch.tv", "dailymotion.com",
+        "soundcloud.com", "facebook.com", "twitter.com", "x.com", "tiktok.com",
+        "instagram.com", "rumble.com", "bilibili.com", "mixcloud.com"
+    ]
+    
+    if any(kd in domain for kd in known_domains):
+        return True
+
+    # Fallback to asking yt-dlp (throttled/debounced by caller)
+    try:
+        from core.dependency_check import _get_startup_info
+        creationflags = 0
+        if platform.system().lower() == "windows":
+            creationflags = 0x08000000
+            
+        # --simulate ensures no download, --get-id is a fast way to verify support
+        cmd = ["yt-dlp", "--simulate", "--get-id", "--quiet", "--no-warnings", url]
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            startupinfo=_get_startup_info(),
+            timeout=10
+        )
+        return res.returncode == 0
+    except:
+        return False
+
+
+def get_ytdlp_feed_url(url: str) -> str:
+    """Try to get a native RSS feed for a yt-dlp supported URL (e.g. YouTube)."""
+    if not url:
+        return None
+        
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    
+    # 1. YouTube specific logic (fastest)
+    if "youtube.com" in domain or "youtu.be" in domain:
+        # Check for channel_id or user in URL
+        if "/channel/" in url:
+            channel_id = url.split("/channel/")[1].split("/")[0].split("?")[0]
+            return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        if "/user/" in url:
+            user = url.split("/user/")[1].split("/")[0].split("?")[0]
+            return f"https://www.youtube.com/feeds/videos.xml?user={user}"
+        if "/playlist?list=" in url:
+            qs = parse_qs(parsed.query)
+            playlist_id = qs.get("list", [None])[0]
+            if playlist_id:
+                return f"https://www.youtube.com/feeds/videos.xml?playlist_id={playlist_id}"
+        
+        # Use yt-dlp to find channel ID for custom URLs
+        try:
+            from core.dependency_check import _get_startup_info
+            creationflags = 0
+            if platform.system().lower() == "windows":
+                creationflags = 0x08000000
+                
+            # extract_flat gives us channel info without downloading every video info
+            cmd = ["yt-dlp", "--dump-json", "--playlist-items", "0", url]
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                startupinfo=_get_startup_info(),
+                timeout=10
+            )
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                channel_id = data.get("channel_id") or data.get("id")
+                if channel_id and data.get("_type") in ("playlist", "channel"):
+                    return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        except:
+            pass
+
+    # 2. Rumble specific logic
+    if "rumble.com" in domain:
+        # Rumble RSS: https://rumble.com/feeds/rss/channel/ClownfishTV.xml
+        # Paths: /c/NAME, /user/NAME, /channel/NAME
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) >= 2:
+            kind = path_parts[0].lower()
+            name = path_parts[1]
+            if kind in ("c", "channel"):
+                return f"https://rumble.com/feeds/rss/channel/{name}.xml"
+            if kind == "user":
+                return f"https://rumble.com/feeds/rss/user/{name}.xml"
+            
+    return None
 
 
 def discover_feed(url: str) -> str:

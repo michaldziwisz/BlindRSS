@@ -221,13 +221,23 @@ class HLSConverter:
             LOG.error("ffmpeg not found in PATH. Transcoding impossible.")
             return
 
-        creation_flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        import platform
+        creation_flags = 0
+        startupinfo = None
+        if platform.system().lower() == "windows":
+            creation_flags = 0x08000000 # CREATE_NO_WINDOW
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0 # SW_HIDE
+
         try:
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 creationflags=creation_flags,
+                startupinfo=startupinfo
             )
         except Exception as e:
             LOG.error("Failed to start ffmpeg: %s", e)

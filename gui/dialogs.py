@@ -1,29 +1,42 @@
 import wx
 import copy
+import threading
 from urllib.parse import urlparse
-from core.discovery import discover_feed
+from core.discovery import discover_feed, is_ytdlp_supported
 from core import utils
 from core.casting import CastingManager
 
 
 class AddFeedDialog(wx.Dialog):
     def __init__(self, parent, categories=None):
-        super().__init__(parent, title="Add Feed", size=(400, 200))
+        super().__init__(parent, title="Add Feed", size=(400, 250))
         
         self.categories = categories or ["Uncategorized"]
+        self._check_timer = None
         
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         # URL Input
-        sizer.Add(wx.StaticText(self, label="Feed URL:"), 0, wx.ALL, 5)
+        sizer.Add(wx.StaticText(self, label="Feed or Media URL:"), 0, wx.ALL, 5)
         self.url_ctrl = wx.TextCtrl(self)
+        self.url_ctrl.SetFocus()
         sizer.Add(self.url_ctrl, 0, wx.EXPAND | wx.ALL, 5)
+        
+        # Compatibility Hint
+        self.status_lbl = wx.StaticText(self, label="")
+        self.status_lbl.SetForegroundColour(wx.Colour(0, 128, 0)) # Greenish
+        sizer.Add(self.status_lbl, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         
         # Category Input
         sizer.Add(wx.StaticText(self, label="Category:"), 0, wx.ALL, 5)
         self.cat_ctrl = wx.ComboBox(self, choices=self.categories, style=wx.CB_DROPDOWN)
         if self.categories:
-            self.cat_ctrl.SetSelection(0)
+            # Try to select 'YouTube' if it exists
+            yt_idx = self.cat_ctrl.FindString("YouTube")
+            if yt_idx != wx.NOT_FOUND:
+                self.cat_ctrl.SetSelection(yt_idx)
+            else:
+                self.cat_ctrl.SetSelection(0)
         sizer.Add(self.cat_ctrl, 0, wx.EXPAND | wx.ALL, 5)
         
         # Buttons
@@ -32,6 +45,42 @@ class AddFeedDialog(wx.Dialog):
         
         self.SetSizer(sizer)
         self.Centre()
+        
+        self.url_ctrl.Bind(wx.EVT_TEXT, self.on_url_text)
+
+    def on_url_text(self, event):
+        url = self.url_ctrl.GetValue().strip()
+        if not url:
+            self.status_lbl.SetLabel("")
+            return
+            
+        if self._check_timer:
+            self._check_timer.Stop()
+            
+        self._check_timer = wx.CallLater(500, self._perform_compatibility_check, url)
+
+    def _perform_compatibility_check(self, url):
+        # Quick check first
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        if "youtube.com" in domain or "youtu.be" in domain:
+            self.status_lbl.SetLabel("✓ Recognized as YouTube source")
+            # Auto-switch category to YouTube if available
+            yt_idx = self.cat_ctrl.FindString("YouTube")
+            if yt_idx != wx.NOT_FOUND:
+                self.cat_ctrl.SetSelection(yt_idx)
+            return
+
+        self.status_lbl.SetLabel("Checking compatibility...")
+        # Background thread for heavier yt-dlp check
+        threading.Thread(target=self._heavy_check, args=(url,), daemon=True).start()
+
+    def _heavy_check(self, url):
+        if is_ytdlp_supported(url):
+            wx.CallAfter(self.status_lbl.SetLabel, "✓ Supported by yt-dlp")
+        else:
+            wx.CallAfter(self.status_lbl.SetLabel, "")
 
     def get_data(self):
         return self.url_ctrl.GetValue(), self.cat_ctrl.GetValue()

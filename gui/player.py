@@ -8,6 +8,7 @@ from core.casting import CastingManager
 from urllib.parse import urlparse
 from core.range_cache_proxy import get_range_cache_proxy
 from core.audio_silence import merge_ranges, merge_ranges_with_gap, scan_audio_for_silence
+from core.dependency_check import _log
 from .hotkeys import HoldRepeatHotkeys
 
 
@@ -150,20 +151,32 @@ class PlayerFrame(wx.Frame):
         cache_ms = int(self.config_manager.get("vlc_network_caching_ms", 500))
         if cache_ms < 0: cache_ms = 0
         file_cache_ms = max(500, cache_ms)
-        self.instance = vlc.Instance(
-            '--no-video',
-            '--input-fast-seek',
-            '--aout=directsound',
-            f'--network-caching={cache_ms}',
-            f'--file-caching={file_cache_ms}',
-            '--http-reconnect'
-        )
-        self.player = self.instance.media_player_new()
-        self.event_manager = self.player.event_manager()
+        self.instance = None
+        self.player = None
+        self.initialized = False
+        
         try:
-            self.event_manager.event_attach(vlc.EventType.MediaPlayerEncounteredError, self._on_vlc_error)
-        except Exception:
-            pass
+            self.instance = vlc.Instance(
+                '--no-video',
+                '--input-fast-seek',
+                '--aout=directsound',
+                f'--network-caching={cache_ms}',
+                f'--file-caching={file_cache_ms}',
+                '--http-reconnect'
+            )
+            self.player = self.instance.media_player_new()
+            self.event_manager = self.player.event_manager()
+            try:
+                self.event_manager.event_attach(vlc.EventType.MediaPlayerEncounteredError, self._on_vlc_error)
+            except Exception:
+                pass
+            self.initialized = True
+        except Exception as e:
+            wx.CallAfter(wx.MessageBox, 
+                f"VLC could not be initialized: {e}\n\n"
+                "Please ensure VLC media player is installed (64-bit version recommended).",
+                "VLC Error", wx.OK | wx.ICON_ERROR)
+            self.initialized = False
         
         self.timer = wx.Timer(self)
         self.Bind(wx.EVT_TIMER, self.on_timer, self.timer)
@@ -336,6 +349,7 @@ class PlayerFrame(wx.Frame):
     # ---------------------------------------------------------------------
 
     def _on_vlc_error(self, event) -> None:
+        _log("VLC encountered an error event.")
         print("DEBUG: VLC error event")
         try:
             wx.CallAfter(self._handle_vlc_error)
@@ -916,13 +930,13 @@ class PlayerFrame(wx.Frame):
         except Exception:
             pass
 
-    def _maybe_range_cache_url(self, url: str) -> str:
+    def _maybe_range_cache_url(self, url: str, headers: dict | None = None) -> str:
         try:
             if not url:
                 return url
             self._last_orig_url = url
             self._last_used_range_proxy = False
-            self._last_range_proxy_headers = None
+            self._last_range_proxy_headers = headers or {}
             self._last_range_proxy_cache_dir = None
             self._last_range_proxy_prefetch_kb = None
             self._last_range_proxy_initial_burst_kb = None
@@ -979,17 +993,25 @@ class PlayerFrame(wx.Frame):
                                          inline_window_kb=inline_window_kb,
                                          initial_burst_kb=initial_burst_kb,
                                          initial_inline_prefetch_kb=initial_inline_kb)
+            
+            # Default headers
             req_headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             }
+            # Merge with passed headers (e.g. from yt-dlp)
+            if headers:
+                req_headers.update(headers)
+
             if 'promodj.com' in host:
                 req_headers['Referer'] = 'https://promodj.com/'
+            
             self._last_used_range_proxy = True
             self._last_range_proxy_headers = dict(req_headers)
             self._last_range_proxy_cache_dir = cache_dir if cache_dir else None
             self._last_range_proxy_prefetch_kb = prefetch_kb
             self._last_range_proxy_initial_burst_kb = initial_burst_kb
-            self._last_range_proxy_initial_inline_kb = initial_inline_kb
+            self._last_range_proxy_initial_inline_kb = initial_inline_prefetch_kb
+            
             proxied = proxy.proxify(url, headers=req_headers)
             print(f"DEBUG: Proxy URL generated: {proxied}")
             try:
@@ -1026,7 +1048,11 @@ class PlayerFrame(wx.Frame):
             print(f"DEBUG: _maybe_range_cache_url exception: {e}")
             return url
 
-    def load_media(self, url, is_youtube=False, chapters=None, title=None):
+    def load_media(self, url, use_ytdlp=False, chapters=None, title=None):
+        if not self.initialized and not self.is_casting:
+            wx.MessageBox("VLC is not initialized. Playback is unavailable.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        _log(f"load_media: {url} (ytdlp={use_ytdlp})")
         print(f"DEBUG: load_media url={url}, is_casting={self.is_casting}")
         if not url:
             return
@@ -1069,16 +1095,27 @@ class PlayerFrame(wx.Frame):
         self.chapter_choice.Disable()
         
         final_url = url
-        if is_youtube:
+        ytdlp_headers = {}
+        if use_ytdlp:
             try:
                 import yt_dlp
-                with yt_dlp.YoutubeDL({'format': 'bestaudio'}) as ydl:
+                # Use browser cookies if possible to avoid bot detection
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'referer': url, # Some sites like Rumble require referer
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                     final_url = info['url']
-                    self.current_title = info.get('title', 'YouTube Video')
+                    ytdlp_headers = info.get('http_headers', {})
+                    self.current_title = info.get('title', title or 'Media Stream')
             except Exception as e:
-                print(f"YouTube resolve failed: {e}")
-                wx.MessageBox("Could not resolve YouTube URL. python-vlc or yt-dlp might be missing.",
+                print(f"yt-dlp resolve failed: {e}")
+                _log(f"yt-dlp resolve failed: {e}")
+                wx.MessageBox(f"Could not resolve media URL via yt-dlp: {e}",
                               "Error", wx.ICON_ERROR)
                 return
         else:
@@ -1095,10 +1132,10 @@ class PlayerFrame(wx.Frame):
         if self.is_casting:
             self.casting_manager.play(final_url, self.current_title, content_type="audio/mpeg")
         else:
-            final_url = self._maybe_range_cache_url(final_url)
+            final_url = self._maybe_range_cache_url(final_url, headers=ytdlp_headers)
             self._last_load_chapters = chapters
             self._last_load_title = self.current_title
-            self._start_silence_scan(final_url, int(getattr(self, '_active_load_seq', 0)))
+            self._start_silence_scan(final_url, int(getattr(self, "_active_load_seq", 0)))
             self._load_vlc_url(final_url, load_seq=int(getattr(self,'_active_load_seq',0)))
         
         if chapters:

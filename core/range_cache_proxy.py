@@ -281,29 +281,34 @@ class _Entry:
         """Move temp chunk to final location and update segments."""
         if end < start:
             try:
-                os.remove(temp_path)
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
             except Exception:
                 pass
             return
 
         final_path = self._chunk_path(start, end)
         try:
-            if os.path.exists(final_path):
-                # If exact chunk exists, replace it. 
-                try:
-                    os.remove(final_path)
-                except Exception:
-                    pass
-            os.replace(temp_path, final_path)
-            print(f"PROXY_DEBUG: Finalized chunk {start}-{end}")
-            
             with self.lock:
+                if os.path.exists(final_path):
+                    # If exact chunk already exists (from another thread), just delete our temp file.
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
+                    return
+
+                # Atomic rename if possible (os.replace is atomic on same volume)
+                os.replace(temp_path, final_path)
+                print(f"PROXY_DEBUG: Finalized chunk {start}-{end}")
+                
                 self.segments.append((start, end))
                 self.segments = _normalize_segments(self.segments)
         except Exception as e:
             LOG.warning("Failed to finalize chunk %s-%s: %s", start, end, e)
             try:
-                os.remove(temp_path)
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
             except Exception:
                 pass
 
@@ -455,7 +460,8 @@ class _Entry:
                 if expected_len <= 0:
                     return False
 
-                tmp_path = self._chunk_path(served_start, served_end) + ".part"
+                # Use a unique temporary path
+                tmp_path = os.path.join(self._dir, f"tmp_fetch_{time.time()}_{threading.get_ident()}_{served_start}.part")
                 bytes_written = 0
                 aborted = False
                 try:
@@ -474,7 +480,8 @@ class _Entry:
                 except Exception:
                     # IO Error during write
                     try:
-                        os.remove(tmp_path)
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
                     except Exception:
                         pass
                     return False
@@ -488,7 +495,8 @@ class _Entry:
                         self._finalize_chunk(tmp_path, served_start, actual_end)
                     else:
                         try:
-                            os.remove(tmp_path)
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
                         except Exception:
                             pass
                     return False
@@ -724,48 +732,59 @@ class _Entry:
                 if expected_len <= 0:
                     return req_start - 1
 
-                # Temporary path for the full expected range
+                # Use a unique temporary path to avoid race conditions between concurrent requests for the same range.
                 final_path = self._chunk_path(served_start, served_end)
-                tmp_path = final_path + ".part"
+                tmp_path = os.path.join(self._dir, f"tmp_{time.time()}_{threading.get_ident()}_{served_start}.part")
 
                 first = True
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):
-                        if not chunk:
-                            continue
-                        if bytes_written + len(chunk) > expected_len:
-                            chunk = chunk[: max(0, expected_len - bytes_written)]
-                        if not chunk:
-                            break
+                try:
+                    with open(tmp_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if not chunk:
+                                continue
+                            if bytes_written + len(chunk) > expected_len:
+                                chunk = chunk[: max(0, expected_len - bytes_written)]
+                            if not chunk:
+                                break
 
-                        # Write to cache first (so if the client is slow, the disk still stays warm).
-                        f.write(chunk)
+                            # Write to cache first (so if the client is slow, the disk still stays warm).
+                            f.write(chunk)
 
-                        try:
-                            wfile.write(chunk)
-                            if flush_first and first:
-                                try:
-                                    wfile.flush()
-                                except Exception:
-                                    pass
-                                first = False
-                        except Exception:
-                            # Client disconnected; SAVE PARTIAL CACHE
-                            if bytes_written > 0:
-                                actual_end = served_start + bytes_written - 1
-                                print(f"PROXY_DEBUG: Saving partial stream chunk {served_start}-{actual_end}")
-                                self._finalize_chunk(tmp_path, served_start, actual_end)
-                                return actual_end
-                            else:
-                                try:
-                                    os.remove(tmp_path)
-                                except Exception:
-                                    pass
-                                return req_start - 1
+                            try:
+                                self.wfile.write(chunk)
+                                if flush_first and first:
+                                    try:
+                                        self.wfile.flush()
+                                    except Exception:
+                                        pass
+                                    first = False
+                            except Exception:
+                                # Client disconnected; SAVE PARTIAL CACHE
+                                if bytes_written > 0:
+                                    actual_end = served_start + bytes_written - 1
+                                    print(f"PROXY_DEBUG: Saving partial stream chunk {served_start}-{actual_end}")
+                                    f.close() # Ensure file is closed before finalizing
+                                    self._finalize_chunk(tmp_path, served_start, actual_end)
+                                    return actual_end
+                                else:
+                                    f.close()
+                                    try:
+                                        os.remove(tmp_path)
+                                    except Exception:
+                                        pass
+                                    return req_start - 1
 
-                        bytes_written += len(chunk)
-                        if bytes_written >= expected_len:
-                            break
+                            bytes_written += len(chunk)
+                            if bytes_written >= expected_len:
+                                break
+                except Exception as e:
+                    print(f"PROXY_DEBUG: Error writing to temp file: {e}")
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    return req_start - 1
 
                 if bytes_written != expected_len:
                     # Interrupted / truncated fetch from origin. SAVE PARTIAL CACHE.

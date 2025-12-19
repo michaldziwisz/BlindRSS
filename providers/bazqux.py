@@ -1,7 +1,8 @@
 import requests
 import logging
 from typing import List, Dict, Any
-from .base import RSSProvider, Feed, Article
+from .base import RSSProvider
+from core.models import Feed, Article
 from core import utils
 
 log = logging.getLogger(__name__)
@@ -141,9 +142,11 @@ class BazQuxProvider(RSSProvider):
 
     def add_feed(self, url: str, category: str = None) -> bool:
         if not self._login(): return False
+        from core.discovery import get_ytdlp_feed_url, discover_feed
+        real_url = get_ytdlp_feed_url(url) or discover_feed(url) or url
         try:
             data = {
-                "s": f"feed/{url}",
+                "s": f"feed/{real_url}",
                 "ac": "subscribe"
             }
             if category:

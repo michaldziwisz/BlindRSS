@@ -1,26 +1,113 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+import os
+import sys
+from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
 
 datas = []
 binaries = []
-hiddenimports = []
+hiddenimports = [
+    "webrtcvad",
+    "mutagen",
+    "requests",
+    "feedparser",
+    "bs4",
+    "dateutil",
+    "vlc",
+    "pkg_resources",
+    "setuptools",
+    "packaging",
+    "charset_normalizer",
+    "idna",
+    "urllib3",
+    "brotli",
+]
 
-# Collect all resources for pyatv and pychromecast to ensure protocol support
-tmp_ret = collect_all('pyatv')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pychromecast')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('zeroconf')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Specifically exclude modules that cause noise or aren't needed on Windows
+excludes = [
+    "urllib3.contrib.emscripten",
+    "tkinter",
+    "tcl",
+    "tk",
+    "matplotlib",
+    "PIL",
+    "PyQt5",
+    "PyQt6",
+    "PySide2",
+    "PySide6",
+]
 
+def _collect(package: str):
+    try:
+        # Check if package is installed before collecting
+        import importlib.util
+        if importlib.util.find_spec(package) is None:
+            return
+        pkg_datas, pkg_bins, pkg_hidden = collect_all(package)
+        datas.extend(pkg_datas)
+        binaries.extend(pkg_bins)
+        hiddenimports.extend(pkg_hidden)
+    except Exception:
+        pass
+
+
+# Essential packages that need full collection
+packages_to_collect = [
+    "pyatv",
+    "pychromecast",
+    "zeroconf",
+    "async_upnp_client",
+    "trafilatura",
+    "yt_dlp",
+    "requests",
+    "bs4",
+    "feedparser",
+    "mutagen",
+    "lxml",
+    "courlan",
+    "htmldate",
+    "justext",
+]
+
+for pkg in packages_to_collect:
+    _collect(pkg)
+
+# Add metadata for packages that use pkg_resources or importlib.metadata for discovery
+metadata_packages = [
+    "pychromecast",
+    "yt_dlp",
+    "trafilatura",
+    "pyatv",
+    "webrtcvad",
+    "requests",
+    "vlc",
+    "setuptools",
+    "cryptography",
+    "pydantic"
+]
+
+for pkg in metadata_packages:
+    try:
+        datas += copy_metadata(pkg)
+    except Exception:
+        pass
+
+# TLS root bundle for requests/trafilatura when frozen
+datas += collect_data_files("certifi")
+
+# Use yt-dlp's bundled PyInstaller hooks to keep extractor plugins intact
+try:
+    import yt_dlp.__pyinstaller as yt_pyi
+    hook_dirs = yt_pyi.get_hook_dirs()
+except Exception:
+    hook_dirs = []
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ["main.py"],
+    pathex=[os.path.abspath(".")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[],
+    hookspath=hook_dirs,
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
@@ -35,7 +122,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='BlindRSS',
+    name="BlindRSS",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -48,4 +135,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=None,
 )

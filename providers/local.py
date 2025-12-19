@@ -7,7 +7,8 @@ import concurrent.futures
 from typing import List, Dict, Any
 from collections import defaultdict
 from urllib.parse import urlparse
-from .base import RSSProvider, Feed, Article
+from .base import RSSProvider
+from core.models import Feed, Article
 from core.db import get_connection, init_db
 from core.discovery import discover_feed
 from core import utils
@@ -197,20 +198,36 @@ class LocalProvider(RSSProvider):
 
                     media_url = None
                     media_type = None
-                    if 'enclosures' in entry and len(entry.enclosures) > 0:
-                        enclosure = entry.enclosures[0]
-                        enc_type = getattr(enclosure, "type", "") or ""
-                        enc_href = getattr(enclosure, "href", None)
-                        audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
-                        if enc_type.startswith("audio/") or enc_type.startswith("video/"):
-                            media_url = enc_href
-                            media_type = enc_type
-                        elif enc_href and enc_href.lower().endswith(audio_exts):
-                            media_url = enc_href
-                            media_type = enc_type or "audio/mpeg"
-                    elif 'yt_videoid' in entry:
+                    
+                    # 1. Prioritize YouTube video ID if present (ensures we get the video, not thumbnail)
+                    if 'yt_videoid' in entry:
                         media_url = url
                         media_type = "video/youtube"
+                    # 2. Check enclosures, but filter out common image types (thumbnails)
+                    elif 'enclosures' in entry and len(entry.enclosures) > 0:
+                        image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+                        valid_enclosure = None
+                        for enc in entry.enclosures:
+                            enc_href = getattr(enc, "href", None)
+                            enc_type = getattr(enc, "type", "") or ""
+                            if enc_href:
+                                # Skip if it looks like an image and isn't explicitly audio/video type
+                                if any(enc_href.lower().endswith(ext) for ext in image_exts):
+                                    if not (enc_type.startswith("audio/") or enc_type.startswith("video/")):
+                                        continue
+                                valid_enclosure = enc
+                                break
+                        
+                        if valid_enclosure:
+                            enc_type = getattr(valid_enclosure, "type", "") or ""
+                            enc_href = getattr(valid_enclosure, "href", None)
+                            audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
+                            if enc_type.startswith("audio/") or enc_type.startswith("video/"):
+                                media_url = enc_href
+                                media_type = enc_type
+                            elif enc_href and enc_href.lower().endswith(audio_exts):
+                                media_url = enc_href
+                                media_type = enc_type or "audio/mpeg"
 
                     c.execute("INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                                 (article_id, feed_id, title, url, content, date, author, media_url, media_type))
@@ -450,7 +467,10 @@ class LocalProvider(RSSProvider):
             conn.close()
 
     def add_feed(self, url: str, category: str = "Uncategorized") -> bool:
-        real_url = discover_feed(url) or url
+        from core.discovery import get_ytdlp_feed_url
+        
+        # Try to get native feed URL for media sites (e.g. YouTube)
+        real_url = get_ytdlp_feed_url(url) or discover_feed(url) or url
         
         try:
             resp = utils.safe_requests_get(real_url, timeout=10)

@@ -89,7 +89,7 @@ if exist "%ProgramFiles%\VideoLAN\VLC\vlc.exe" (
 ffmpeg -version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [!] FFmpeg not found on PATH. Attempting install via Winget...
-    winget install -e --id FFmpeg.FFmpeg --silent --accept-package-agreements --accept-source-agreements
+    winget install -e --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
 ) else (
     echo [V] FFmpeg found.
 )

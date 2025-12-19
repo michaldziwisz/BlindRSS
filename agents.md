@@ -4,6 +4,10 @@
 **Stack:** Python 3.13, wxPython (GUI), SQLite (Storage), Feedparser/Requests.
 **Entry:** `main.py` -> `core.factory` -> `gui.mainframe`.
 **Build:** PyInstaller (`main.spec` -> `dist/BlindRSS.exe`).
+**Build Notes (2025-12-19):**
+* `main.spec` now auto-collects datas/binaries/hiddenimports for casting stacks (`pyatv`, `pychromecast`, `zeroconf`, `async_upnp_client`), full-text (`trafilatura`), downloader (`yt_dlp`), and CA bundle (`certifi`); keeps `webrtcvad` available.
+* Uses yt-dlp’s bundled hook dir to retain extractor plugins.
+* Rebuild command: `pyinstaller --clean --noconfirm main.spec` (outputs to `dist/BlindRSS.exe`).
 
 ## File Structure & Responsibilities
 *   **`main.py`**: Bootstrap. Initializes `ConfigManager`, `RSSProvider`, `MainFrame`. **Async Startup:** Uses `threading` to load GUI while feeds fetch.
