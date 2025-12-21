@@ -1,3 +1,4 @@
+import os
 import requests
 import subprocess
 import json
@@ -48,6 +49,61 @@ def is_ytdlp_supported(url: str) -> bool:
         return res.returncode == 0
     except:
         return False
+
+
+def is_rumble_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        domain = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return "rumble.com" in domain
+
+
+def _build_cookie_sources() -> list[tuple]:
+    sources: list[tuple] = []
+
+    def _add(browser: str, profile: str | None = None) -> None:
+        tup = (browser,) if profile is None else (browser, profile)
+        if tup not in sources:
+            sources.append(tup)
+
+    if platform.system().lower() == "windows":
+        local = os.environ.get("LOCALAPPDATA", "")
+        chromium_root = os.path.join(local, "Chromium") if local else ""
+        chromium_user_data = os.path.join(chromium_root, "User Data") if chromium_root else ""
+        if chromium_user_data and os.path.isdir(chromium_user_data):
+            _add("chromium", chromium_user_data)
+        elif chromium_root and os.path.isdir(chromium_root):
+            _add("chromium", chromium_root)
+
+        browser_dirs = [
+            ("edge", os.path.join(local, "Microsoft", "Edge", "User Data")),
+            ("brave", os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data")),
+            ("chrome", os.path.join(local, "Google", "Chrome", "User Data")),
+        ]
+        for name, path in browser_dirs:
+            if path and os.path.isdir(path):
+                _add(name)
+
+    if not sources:
+        for name in ("chromium", "edge", "brave", "chrome"):
+            _add(name)
+
+    return sources
+
+
+def get_rumble_cookie_sources(url: str) -> list[tuple]:
+    """Return cookiesfrombrowser candidates for rumble URLs."""
+    if not is_rumble_url(url):
+        return []
+    return _build_cookie_sources()
+
+
+def get_ytdlp_cookie_sources(url: str | None = None) -> list[tuple]:
+    """Return cookiesfrombrowser candidates for yt-dlp extraction."""
+    return _build_cookie_sources()
 
 
 def get_ytdlp_feed_url(url: str) -> str:

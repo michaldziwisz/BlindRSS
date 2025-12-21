@@ -51,6 +51,11 @@ def _collect(package: str):
         pass
 
 
+# Bundle local binaries if present (e.g. yt-dlp.exe)
+if os.path.exists("bin/yt-dlp.exe"):
+    binaries.append(("bin/yt-dlp.exe", "bin"))
+
+
 # Essential packages that need full collection
 packages_to_collect = [
     "pyatv",
@@ -142,7 +147,7 @@ a = Analysis(
     hookspath=hook_dirs,
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
     optimize=0,
 )

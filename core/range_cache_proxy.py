@@ -34,6 +34,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+from core.utils import HEADERS
+
 LOG = logging.getLogger(__name__)
 
 _DEFAULT_UA = (
@@ -321,7 +323,9 @@ class _Entry:
                     # Perform a quick HEAD/GET stream to resolve redirects without downloading body
                     # Use a separate ephemeral session or the main one? Main is fine.
                     # Just doing a quick resolve.
-                    hdrs = dict(self.headers or {})
+                    hdrs = HEADERS.copy()
+                    hdrs.pop("Accept", None)
+                    hdrs.update(self.headers or {})
                     hdrs.setdefault("User-Agent", _DEFAULT_UA)
                     try:
                         # stream=True ensures we don't download the file.
@@ -343,7 +347,9 @@ class _Entry:
 
             target_url = self.real_url or self.url
 
-            hdrs = dict(self.headers or {})
+            hdrs = HEADERS.copy()
+            hdrs.pop("Accept", None)
+            hdrs.update(self.headers or {})
             hdrs.setdefault("User-Agent", _DEFAULT_UA)
             hdrs.setdefault("Accept", "*/*")
             # Avoid transparent compression; ranged fetches must be byte-exact.
@@ -425,7 +431,9 @@ class _Entry:
         except Exception:
             pass
 
-        hdrs = dict(self.headers or {})
+        hdrs = HEADERS.copy()
+        hdrs.pop("Accept", None)
+        hdrs.update(self.headers or {})
         hdrs.setdefault("User-Agent", _DEFAULT_UA)
         hdrs.setdefault("Accept", "*/*")
         hdrs.setdefault("Accept-Encoding", "identity")
@@ -681,7 +689,9 @@ class _Entry:
 
         target_url = self.real_url or self.url
 
-        hdrs = dict(self.headers or {})
+        hdrs = HEADERS.copy()
+        hdrs.pop("Accept", None)
+        hdrs.update(self.headers or {})
         hdrs.setdefault("User-Agent", _DEFAULT_UA)
         hdrs.setdefault("Accept", "*/*")
         hdrs.setdefault("Accept-Encoding", "identity")
@@ -1333,7 +1343,9 @@ class RangeCacheProxy:
                     # If origin does not support range, just stream through (no caching).
                     if ent.range_supported is False:
                         print("PROXY_DEBUG: Range not supported, streaming directly.")
-                        hdrs = dict(ent.headers or {})
+                        hdrs = HEADERS.copy()
+                        hdrs.pop("Accept", None)
+                        hdrs.update(ent.headers or {})
                         hdrs.setdefault("User-Agent", _DEFAULT_UA)
                         hdrs.setdefault("Accept", "*/*")
                         hdrs.setdefault("Accept-Encoding", "identity")

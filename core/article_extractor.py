@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List, Set
 from urllib.parse import urljoin, urlsplit
 
-import requests
 from bs4 import BeautifulSoup
+
+from core import utils
 
 try:
     import trafilatura
@@ -24,13 +25,6 @@ try:
 except Exception:
     trafilatura = None
     extract_metadata = None
-
-
-_DEFAULT_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/123.0.0.0 Safari/537.36"
-)
 
 
 class ExtractionError(RuntimeError):
@@ -158,23 +152,12 @@ def _download_html(url: str, timeout: int = 20) -> Optional[str]:
     if not url:
         return None
 
-    # Prefer trafilatura downloader when available.
-    if trafilatura is not None:
-        try:
-            downloaded = trafilatura.fetch_url(url)
-            if downloaded:
-                return downloaded
-        except Exception:
-            pass
-
-    # Fallback to requests.
     try:
-        r = requests.get(
-            url,
-            timeout=timeout,
-            headers={"User-Agent": _DEFAULT_UA, "Accept-Language": "en-US,en;q=0.9"},
-            allow_redirects=True,
-        )
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        r = utils.safe_requests_get(url, timeout=timeout, headers=headers, allow_redirects=True)
         if 200 <= r.status_code < 400:
             r.encoding = r.encoding or "utf-8"
             return r.text

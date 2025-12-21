@@ -14,6 +14,8 @@ from typing import Dict, List, Optional
 import os
 import urllib.parse
 
+from core import utils
+
 try:
     from core.stream_proxy import get_proxy
     from core.http_headers import channel_http_headers
@@ -736,7 +738,8 @@ class DLNACaster(BaseCaster):
         if self._device:
             try:
                 # DLNA volume is 0-100
-                await self._device.async_set_volume_level(max(0.0, min(1.0, level)))
+                vol = max(0.0, min(1.0, float(level)))
+                await self._device.async_set_volume_level(int(vol * 100))
             except Exception as e:
                 LOG.debug("DLNA set_volume error: %s", e)
     
@@ -966,7 +969,9 @@ def _detect_mime_type(url: str, default: str = "video/mp2t") -> str:
         if url.startswith("http"):
             import urllib.request
 
-            req = urllib.request.Request(url, method="HEAD")
+            headers = dict(utils.HEADERS)
+            headers["Accept"] = "*/*"
+            req = urllib.request.Request(url, method="HEAD", headers=headers)
             with urllib.request.urlopen(req, timeout=3) as resp:
                 ctype = resp.headers.get("Content-Type", "")
                 if ctype:
@@ -1149,4 +1154,3 @@ class CastingManager:
         # but for UI checks it's okay to read the local prop if updated correctly.
         # However, 'active_caster' is set on the loop.
         return self.active_caster is not None and self.active_caster.is_connected()
-

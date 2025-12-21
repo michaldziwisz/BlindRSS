@@ -509,12 +509,14 @@ def resolve_final_url(url: str, max_redirects: int = 30, timeout_s: float = 15.0
         return url
 
     ua = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    hdrs = HEADERS.copy()
+    hdrs["User-Agent"] = ua
 
     try:
         s = requests.Session()
         s.max_redirects = int(max_redirects) if int(max_redirects) > 0 else 30
         # GET (not HEAD): many trackers/hosts behave differently for HEAD and can loop.
-        r = s.get(url, allow_redirects=True, timeout=timeout_s, headers={"User-Agent": ua}, stream=True)
+        r = s.get(url, allow_redirects=True, timeout=timeout_s, headers=hdrs, stream=True)
         # Consume nothing; just close the socket.
         final = r.url or url
         try:

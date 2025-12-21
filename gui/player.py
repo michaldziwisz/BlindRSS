@@ -5,6 +5,7 @@ import socket
 import time
 import platform
 from core import utils
+from core import discovery
 from core.casting import CastingManager
 from urllib.parse import urlparse
 from core.range_cache_proxy import get_range_cache_proxy
@@ -1107,11 +1108,52 @@ class PlayerFrame(wx.Frame):
                     # Hide internal yt-dlp subprocess windows (ffmpeg/ffprobe)
                     ydl_opts['subprocess_startupinfo'] = _get_startup_info()
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    final_url = info['url']
-                    ytdlp_headers = info.get('http_headers', {})
-                    self.current_title = info.get('title', title or 'Media Stream')
+                info = None
+                last_err = None
+                tried_cookie_sources = []
+
+                def _extract_with_opts(opts):
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+
+                def _try_cookie_sources(sources):
+                    nonlocal info, last_err
+                    for source in sources:
+                        if source in tried_cookie_sources:
+                            continue
+                        tried_cookie_sources.append(source)
+                        ydl_opts["cookiesfrombrowser"] = source
+                        try:
+                            info = _extract_with_opts(ydl_opts)
+                            _log(f"yt-dlp cookies OK ({source[0]})")
+                            return True
+                        except Exception as e:
+                            last_err = e
+                            _log(f"yt-dlp cookies failed ({source[0]}): {e}")
+                    return False
+
+                cookie_sources = discovery.get_rumble_cookie_sources(url)
+                if cookie_sources:
+                    _try_cookie_sources(cookie_sources)
+
+                if info is None:
+                    ydl_opts.pop("cookiesfrombrowser", None)
+                    try:
+                        info = _extract_with_opts(ydl_opts)
+                    except Exception as e:
+                        last_err = e
+
+                if info is None:
+                    fallback_sources = discovery.get_ytdlp_cookie_sources(url)
+                    if fallback_sources:
+                        _try_cookie_sources(fallback_sources)
+
+                if info is None:
+                    raise last_err if last_err else RuntimeError("yt-dlp extraction failed")
+
+                final_url = info['url']
+                ytdlp_headers = info.get('http_headers', {})
+                self.current_title = info.get('title', title or 'Media Stream')
             except Exception as e:
                 print(f"yt-dlp resolve failed: {e}")
                 _log(f"yt-dlp resolve failed: {e}")
@@ -1433,7 +1475,10 @@ class PlayerFrame(wx.Frame):
     def set_playback_speed(self, speed):
         self.playback_speed = speed
         if not self.is_casting:
-            self.player.set_rate(speed)
+            try:
+                self.player.set_rate(speed)
+            except Exception:
+                pass
         # Set combo selection
         speeds = utils.build_playback_speeds()
         try:

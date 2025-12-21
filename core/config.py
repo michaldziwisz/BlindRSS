@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import sys
@@ -100,8 +101,8 @@ class ConfigManager:
                         return self._apply_defaults(loaded)
             except Exception as e:
                 log.error(f"Error loading config: {e}")
-                return DEFAULT_CONFIG
-        return DEFAULT_CONFIG
+                return copy.deepcopy(DEFAULT_CONFIG)
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     def _apply_defaults(self, cfg: dict) -> dict:
         """

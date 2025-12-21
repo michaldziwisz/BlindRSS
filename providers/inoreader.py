@@ -85,7 +85,8 @@ class InoreaderProvider(RSSProvider):
                 date = utils.normalize_date(
                     str(item.get("published", "")),
                     item.get("title", ""),
-                    content
+                    content,
+                    item.get("alternate", [{}])[0].get("href", ""),
                 )
 
                 chapters = chapters_map.get(article_id, [])

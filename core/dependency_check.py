@@ -7,9 +7,13 @@ import os
 import urllib.request
 import contextlib
 import ctypes
-import winreg
 import time
 import tempfile
+
+try:
+    import winreg
+except Exception:
+    winreg = None
 
 def _log(msg):
     """Write to a persistent log file in temp dir for user diagnostics."""
@@ -54,6 +58,8 @@ def _run_quiet(cmd, timeout=900):
 def _maybe_add_windows_path():
     """Meticulously find VLC/ffmpeg and add to PATH for this process."""
     if platform.system().lower() != "windows":
+        return
+    if winreg is None:
         return
     
     _log("Starting meticulous Windows path search...")
@@ -398,6 +404,19 @@ def _ensure_yt_dlp_cli():
 
     # Check for working yt-dlp
     exe = None
+
+    # 0. Check bundled (sys._MEIPASS) if frozen
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundled_bin = os.path.join(sys._MEIPASS, "bin")
+        bundled_exe = os.path.join(bundled_bin, "yt-dlp.exe")
+        if os.path.isfile(bundled_exe) and works(bundled_exe):
+            _log(f"Using bundled yt-dlp at {bundled_exe}")
+            # Prepend to PATH immediately so subprocess calls find it
+            current_path = os.environ.get("PATH", "")
+            if bundled_bin not in current_path:
+                os.environ["PATH"] = os.pathsep.join([bundled_bin, current_path])
+            return
+
     if os.path.isfile(local_exe) and works(local_exe):
         exe = local_exe
         _log(f"Using local yt-dlp at {exe}")
@@ -433,7 +452,10 @@ def _ensure_yt_dlp_cli():
 def _add_bin_to_user_path(bin_dir):
     """Persist bin_dir to user PATH."""
     try:
-        if platform.system().lower() != "windows": return
+        if platform.system().lower() != "windows":
+            return
+        if winreg is None:
+            return
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
             try: existing, _ = winreg.QueryValueEx(key, "PATH")
             except: existing = ""

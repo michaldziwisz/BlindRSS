@@ -46,7 +46,7 @@ You are a python expert skilled in yt-dlp, ffmpeg,  and rss.
     *   `mainframe.py`: Main window.
         *   **Threads:** `_refresh_feeds_worker` (startup), `_manual_refresh_thread` (F5).
         *   **Tray:** Minimizes to tray via `EVT_ICONIZE`.
-    *   `player.py`: `wx.media` implementation.
+*   `player.py`: `python-vlc`-based player (VLC backend).
         *   **Proxy Integration:** Routes URLs through `127.0.0.1` proxy for aggressive caching.
         *   **Seeking:** Custom debounce logic (`_apply_seek_time_ms`) prevents UI stutter.
         *   **Async Load:** Opens window immediately, loads chapters in background.

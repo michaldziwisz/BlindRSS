@@ -168,7 +168,8 @@ class MinifluxProvider(RSSProvider):
             date = utils.normalize_date(
                 entry.get("published_at") or entry.get("published"),
                 entry.get("title") or "",
-                entry.get("content") or entry.get("summary") or ""
+                entry.get("content") or entry.get("summary") or "",
+                entry.get("url") or "",
             )
 
             article_id = str(entry.get("id"))
@@ -319,7 +320,8 @@ class MinifluxProvider(RSSProvider):
             date = utils.normalize_date(
                 entry.get("published_at") or entry.get("published"),
                 entry.get("title") or "",
-                entry.get("content") or entry.get("summary") or ""
+                entry.get("content") or entry.get("summary") or "",
+                entry.get("url") or "",
             )
 
             article_id = str(entry["id"])

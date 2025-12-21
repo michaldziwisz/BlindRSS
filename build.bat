@@ -51,7 +51,6 @@ if exist "main.spec" (
 )
 
 echo [BlindRSS Build] Staging companion files into dist...
-if exist "%SCRIPT_DIR%config.json" copy /Y "%SCRIPT_DIR%config.json" "%SCRIPT_DIR%dist\config.json" >nul
 if exist "%SCRIPT_DIR%README.md" copy /Y "%SCRIPT_DIR%README.md" "%SCRIPT_DIR%dist\README.md" >nul
 
 echo [BlindRSS Build] Copying exe to repo root...

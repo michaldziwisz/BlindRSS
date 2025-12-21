@@ -65,7 +65,7 @@ class AddFeedDialog(wx.Dialog):
         domain = parsed.netloc.lower()
         
         if "youtube.com" in domain or "youtu.be" in domain:
-            self.status_lbl.SetLabel("✓ Recognized as YouTube source")
+            self.status_lbl.SetLabel("OK: Recognized as YouTube source")
             # Auto-switch category to YouTube if available
             yt_idx = self.cat_ctrl.FindString("YouTube")
             if yt_idx != wx.NOT_FOUND:
@@ -78,7 +78,7 @@ class AddFeedDialog(wx.Dialog):
 
     def _heavy_check(self, url):
         if is_ytdlp_supported(url):
-            wx.CallAfter(self.status_lbl.SetLabel, "✓ Supported by yt-dlp")
+            wx.CallAfter(self.status_lbl.SetLabel, "OK: Supported by yt-dlp")
         else:
             wx.CallAfter(self.status_lbl.SetLabel, "")
 
@@ -450,15 +450,14 @@ class PodcastSearchDialog(wx.Dialog):
         threading.Thread(target=self._search_thread, args=(term,), daemon=True).start()
 
     def _search_thread(self, term):
-        import requests
         import urllib.parse
-        
+
         data = None
         error = None
-        
+
         try:
             url = f"https://itunes.apple.com/search?media=podcast&term={urllib.parse.quote(term)}"
-            resp = requests.get(url, timeout=10)
+            resp = utils.safe_requests_get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:

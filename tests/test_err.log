@@ -1,0 +1,5 @@
+2025-12-18 23:09:39,227 - providers.miniflux - ERROR - Miniflux error for https://rss.serrebiradio.com/v1/feeds/155/entries: 400 Client Error: Bad Request for url: https://rss.serrebiradio.com/v1/feeds/155/entries?direction=desc&order=published_at&status=unread&status=read&offset=0&limit=400
+2025-12-18 23:09:40,266 - providers.miniflux - ERROR - Miniflux error for https://rss.serrebiradio.com/v1/feeds/155/entries: 400 Client Error: Bad Request for url: https://rss.serrebiradio.com/v1/feeds/155/entries?direction=desc&order=published_at&status=unread&status=read&offset=0&limit=400
+2025-12-18 23:17:39,104 - providers.miniflux - ERROR - Miniflux error for https://rss.serrebiradio.com/v1/feeds/227/refresh: HTTPSConnectionPool(host='rss.serrebiradio.com', port=443): Read timed out. (read timeout=10)
+2025-12-18 23:17:41,614 - providers.miniflux - WARNING - Miniflux refresh failed for https://rss.serrebiradio.com/v1/feeds/97/refresh (500). Server might be overloaded or feed is broken.
+2025-12-18 23:21:17,545 - __main__ - INFO - Shutting down proxies...
