@@ -50,6 +50,25 @@ if exist "main.spec" (
     %VENV_PYINSTALLER% --onefile --noconfirm --name BlindRSS main.py
 )
 
+echo [BlindRSS Build] Refreshing VLC plugins cache...
+set VLC_DIR=C:\Program Files\VideoLAN\VLC
+if not exist "%VLC_DIR%\vlc-cache-gen.exe" set VLC_DIR=C:\Program Files (x86)\VideoLAN\VLC
+set VLC_CACHE_GEN=%VLC_DIR%\vlc-cache-gen.exe
+
+set DIST_PLUGINS=%SCRIPT_DIR%dist\BlindRSS\_internal\plugins
+if not exist "%DIST_PLUGINS%" set DIST_PLUGINS=%SCRIPT_DIR%dist\BlindRSS\plugins
+
+if exist "%DIST_PLUGINS%" (
+    if exist "%DIST_PLUGINS%\plugins.dat" del /f /q "%DIST_PLUGINS%\plugins.dat"
+    if exist "%VLC_CACHE_GEN%" (
+        "%VLC_CACHE_GEN%" "%DIST_PLUGINS%" >nul 2>nul
+    ) else (
+        echo [!] vlc-cache-gen.exe not found. Plugins cache will be rebuilt at runtime.
+    )
+) else (
+    echo [!] VLC plugins directory not found in dist. Skipping cache refresh.
+)
+
 echo [BlindRSS Build] Staging companion files into dist...
 if exist "%SCRIPT_DIR%README.md" copy /Y "%SCRIPT_DIR%README.md" "%SCRIPT_DIR%dist\README.md" >nul
 

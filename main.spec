@@ -39,6 +39,12 @@ for pkg in packages_to_collect:
 # Add VLC plugins
 datas.append((os.path.join(vlc_path, 'plugins'), 'plugins'))
 
+# Add VLC assets (locales, Lua scripts, HRTF data)
+for asset_dir in ('lua', 'locale', 'hrtfs'):
+    asset_path = os.path.join(vlc_path, asset_dir)
+    if os.path.isdir(asset_path):
+        datas.append((asset_path, asset_dir))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
