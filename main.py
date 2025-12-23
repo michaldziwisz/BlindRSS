@@ -15,6 +15,31 @@ logging.getLogger("trafilatura").setLevel(logging.CRITICAL)
 logging.getLogger("readability").setLevel(logging.CRITICAL)
 log = logging.getLogger(__name__)
 
+def _rebind_logging_streams():
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setStream(sys.stderr)
+
+def _enable_debug_console(config_manager):
+    if not sys.platform.startswith("win"):
+        return
+    if not bool(config_manager.get("debug_mode", False)):
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GetConsoleWindow():
+            return
+        if not kernel32.AllocConsole():
+            return
+        sys.stdout = open("CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace")
+        sys.stderr = open("CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace")
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        _rebind_logging_streams()
+    except Exception as e:
+        log.error(f"Failed to open debug console: {e}")
+
 # Essential imports
 from core.dependency_check import check_and_install_dependencies
 import wx
@@ -81,10 +106,11 @@ class GlobalMediaKeyFilter(wx.EventFilter):
 
 class RSSApp(wx.App):
     def OnInit(self):
+        self.config_manager = ConfigManager()
+        _enable_debug_console(self.config_manager)
+
         # Run dependency check in background so GUI is not blocked
         threading.Thread(target=check_and_install_dependencies, daemon=True).start()
-
-        self.config_manager = ConfigManager()
         self.provider = get_provider(self.config_manager)
         
         self.frame = MainFrame(self.provider, self.config_manager)

@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     "feed_timeout_seconds": 15,
     "feed_retry_attempts": 5,
     "active_provider": "local",
+    "debug_mode": False,
     "skip_silence": True,
     "silence_vad_aggressiveness": 2,  # 0-3 (3 = most aggressive)
     "silence_vad_frame_ms": 30,  # 10, 20, or 30

@@ -205,6 +205,10 @@ class SettingsDialog(wx.Dialog):
         self.min_tray_chk = wx.CheckBox(general_panel, label="Minimize to Tray")
         self.min_tray_chk.SetValue(config.get("minimize_to_tray", True))
         general_sizer.Add(self.min_tray_chk, 0, wx.ALL, 5)
+
+        self.debug_mode_chk = wx.CheckBox(general_panel, label="Debug mode (show console on startup)")
+        self.debug_mode_chk.SetValue(bool(config.get("debug_mode", False)))
+        general_sizer.Add(self.debug_mode_chk, 0, wx.ALL, 5)
         
         general_panel.SetSizer(general_sizer)
         notebook.AddPage(general_panel, "General")
@@ -359,6 +363,7 @@ class SettingsDialog(wx.Dialog):
             "download_retention": self.retention_ctrl.GetValue(),
             "close_to_tray": self.close_tray_chk.GetValue(),
             "minimize_to_tray": self.min_tray_chk.GetValue(),
+            "debug_mode": self.debug_mode_chk.GetValue(),
             "active_provider": self.provider_choice.GetStringSelection(),
             "providers": providers,
         }
