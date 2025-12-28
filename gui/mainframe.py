@@ -16,6 +16,7 @@ from providers.base import RSSProvider
 from core.config import APP_DIR
 from core import utils
 from core import article_extractor
+from core import updater
 import core.discovery
 
 
@@ -50,6 +51,8 @@ class MainFrame(wx.Frame):
         
         self._updating_list = False # Flag to ignore selection events during background updates
         self.selected_article_id = None
+        self._update_check_inflight = False
+        self._update_install_inflight = False
 
         self.init_ui()
         self.init_menus()
@@ -69,6 +72,7 @@ class MainFrame(wx.Frame):
         # Initial load
         self.refresh_feeds()
         wx.CallAfter(self._focus_default_control)
+        wx.CallAfter(self._maybe_auto_check_updates)
 
     def init_ui(self):
         # Main Splitter: Tree vs Content Area
@@ -353,6 +357,7 @@ class MainFrame(wx.Frame):
         
         tools_menu = wx.Menu()
         settings_item = tools_menu.Append(wx.ID_PREFERENCES, "&Settings...", "Configure application")
+        check_updates_item = tools_menu.Append(wx.ID_ANY, "Check for &Updates...", "Check for new versions")
         tools_menu.AppendSeparator()
         search_podcast_item = tools_menu.Append(wx.ID_ANY, "Search &Podcast...", "Search and add a podcast feed")
         
@@ -378,6 +383,7 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_player_volume_up, player_vol_up_item)
         self.Bind(wx.EVT_MENU, self.on_player_volume_down, player_vol_down_item)
         self.Bind(wx.EVT_MENU, self.on_settings, settings_item)
+        self.Bind(wx.EVT_MENU, self.on_check_updates, check_updates_item)
         self.Bind(wx.EVT_MENU, self.on_exit, exit_item)
         self.Bind(wx.EVT_MENU, self.on_search_podcast, search_podcast_item)
 
@@ -2108,6 +2114,89 @@ class MainFrame(wx.Frame):
                 except Exception:
                     pass
         dlg.Destroy()
+
+    def on_check_updates(self, event):
+        self._start_update_check(manual=True)
+
+    def _maybe_auto_check_updates(self):
+        try:
+            if not bool(self.config_manager.get("auto_check_updates", True)):
+                return
+        except Exception:
+            return
+        wx.CallLater(2500, lambda: self._start_update_check(manual=False))
+
+    def _start_update_check(self, manual: bool):
+        if getattr(self, "_update_check_inflight", False):
+            return
+        self._update_check_inflight = True
+        threading.Thread(target=self._update_check_thread, args=(manual,), daemon=True).start()
+
+    def _update_check_thread(self, manual: bool):
+        try:
+            result = updater.check_for_updates()
+        except Exception as e:
+            result = updater.UpdateCheckResult("error", f"Update check failed: {e}")
+        wx.CallAfter(self._handle_update_check_result, result, manual)
+
+    def _handle_update_check_result(self, result: updater.UpdateCheckResult, manual: bool):
+        self._update_check_inflight = False
+
+        if result.status == "error":
+            if manual:
+                wx.MessageBox(result.message, "Update Check Failed", wx.ICON_ERROR)
+            return
+
+        if result.status == "up_to_date":
+            if manual:
+                wx.MessageBox(result.message, "No Updates", wx.ICON_INFORMATION)
+            return
+
+        if result.status != "update_available" or not result.info:
+            if manual:
+                wx.MessageBox("Unable to determine update status.", "Updates", wx.ICON_ERROR)
+            return
+
+        info = result.info
+        summary = info.notes_summary or "Release notes are available on GitHub."
+        prompt = (
+            f"A new version of BlindRSS is available ({info.tag}).\n\n"
+            f"{summary}\n\n"
+            "Download and install this update now?"
+        )
+        if wx.MessageBox(prompt, "Update Available", wx.YES_NO | wx.ICON_INFORMATION) == wx.YES:
+            self._start_update_install(info)
+
+    def _start_update_install(self, info: updater.UpdateInfo):
+        if getattr(self, "_update_install_inflight", False):
+            return
+        if not updater.is_update_supported():
+            wx.MessageBox(
+                "Auto-update is only available in the packaged Windows build.\n"
+                "Download the latest release from GitHub.",
+                "Updates",
+                wx.ICON_INFORMATION,
+            )
+            return
+        self._update_install_inflight = True
+        wx.BeginBusyCursor()
+        threading.Thread(target=self._update_install_thread, args=(info,), daemon=True).start()
+
+    def _update_install_thread(self, info: updater.UpdateInfo):
+        ok, msg = updater.download_and_apply_update(info)
+        wx.CallAfter(self._finish_update_install, ok, msg)
+
+    def _finish_update_install(self, ok: bool, msg: str):
+        self._update_install_inflight = False
+        try:
+            wx.EndBusyCursor()
+        except Exception:
+            pass
+        if not ok:
+            wx.MessageBox(msg, "Update Failed", wx.ICON_ERROR)
+            return
+        wx.MessageBox(msg, "Update Ready", wx.ICON_INFORMATION)
+        self.real_close()
 
     def on_exit(self, event):
         self.real_close()

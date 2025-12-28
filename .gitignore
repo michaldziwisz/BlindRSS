@@ -12,6 +12,11 @@ build/
 dist/
 *.spec
 
+# Local build artifacts
+BlindRSS.zip
+bin/
+config.json
+
 # Database
 rss.db
 rss.db-wal

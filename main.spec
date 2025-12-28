@@ -36,6 +36,11 @@ for pkg in packages_to_collect:
     binaries.extend(b)
     hiddenimports.extend(h)
 
+# Include update helper script in the app directory.
+helper_path = os.path.join(os.getcwd(), 'update_helper.bat')
+if os.path.isfile(helper_path):
+    datas.append((helper_path, '.'))
+
 # Add VLC plugins
 datas.append((os.path.join(vlc_path, 'plugins'), 'plugins'))
 

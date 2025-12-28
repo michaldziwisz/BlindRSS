@@ -8,6 +8,15 @@ Screen-reader friendly vibed RSS & Podcast player. Local, fast, and keyboard-fir
 1. Download `BlindRSS.exe` from releases.
 2. Run `BlindRSS.exe`.
 
+## Updater (Windows)
+BlindRSS can check GitHub Releases for updates, verify integrity, and safely swap in new files.
+
+- Checks GitHub Releases for `BlindRSS-update.json` and the versioned zip asset.
+- Verifies SHA-256 of the downloaded zip and Authenticode signature of `BlindRSS.exe`.
+- Uses `update_helper.bat` to stage, swap, keep a backup, and restart.
+- Toggle auto-check in Settings: "Check for updates on startup" (default ON).
+- Manual check: Tools → "Check for Updates..."
+
 ### Build it yourself (PyInstaller)
 1. Install Python 3.12+ and requirements: `pip install -r requirements.txt`.
 2. Ensure **VLC Media Player (64-bit)** is installed at `C:\Program Files\VideoLAN\VLC`.
@@ -20,3 +29,30 @@ Screen-reader friendly vibed RSS & Podcast player. Local, fast, and keyboard-fir
 3. Run: `python main.py`
 
 *Note: On first launch, the app automatically attempts to install system-level dependencies like **VLC** and **FFmpeg** (using Winget on Windows, Brew on macOS, or the system package manager on Linux). It also auto-downloads tools like `yt-dlp` if missing.*
+
+## Release Pipeline (Windows)
+`build.bat` now supports end-to-end releases:
+
+- `build.bat build`   builds + signs + zips locally (no git/release).
+- `build.bat release` computes next version, bumps code, builds, signs, zips, generates update manifest, tags, pushes, and creates a GitHub release.
+- `build.bat dry-run` prints what it would do.
+
+### Prerequisites
+- Code signing certificate installed and accessible to `signtool`.
+- `signtool.exe` from Windows SDK (override path with `SIGNTOOL_PATH`).
+- GitHub CLI (`gh`) authenticated (`gh auth login`).
+
+### Update Manifest
+Each release includes `BlindRSS-update.json` with:
+- version, asset name, download URL, SHA-256, publish date, and summary.
+
+## Manual Test Plan (Updater)
+1. Simulate an older version:
+   - Set `core/version.py` to `1.41.0`, then run `build.bat build` and install/run that zip.
+2. Publish a new release:
+   - Set `core/version.py` back to current, then run `build.bat release` to publish v1.42.0+ with assets.
+3. In the old build:
+   - Tools → "Check for Updates..." and accept the prompt.
+4. Verify:
+   - Zip SHA-256 and Authenticode verification succeeds.
+   - App closes, swaps files, restarts, and reports the new version.

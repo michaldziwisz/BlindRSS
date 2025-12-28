@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "feed_retry_attempts": 5,
     "active_provider": "local",
     "debug_mode": False,
+    "auto_check_updates": True,
     "skip_silence": True,
     "silence_vad_aggressiveness": 2,  # 0-3 (3 = most aggressive)
     "silence_vad_frame_ms": 30,  # 10, 20, or 30

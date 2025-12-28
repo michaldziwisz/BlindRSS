@@ -209,6 +209,10 @@ class SettingsDialog(wx.Dialog):
         self.debug_mode_chk = wx.CheckBox(general_panel, label="Debug mode (show console on startup)")
         self.debug_mode_chk.SetValue(bool(config.get("debug_mode", False)))
         general_sizer.Add(self.debug_mode_chk, 0, wx.ALL, 5)
+
+        self.auto_update_chk = wx.CheckBox(general_panel, label="Check for updates on startup")
+        self.auto_update_chk.SetValue(bool(config.get("auto_check_updates", True)))
+        general_sizer.Add(self.auto_update_chk, 0, wx.ALL, 5)
         
         general_panel.SetSizer(general_sizer)
         notebook.AddPage(general_panel, "General")
@@ -364,6 +368,7 @@ class SettingsDialog(wx.Dialog):
             "close_to_tray": self.close_tray_chk.GetValue(),
             "minimize_to_tray": self.min_tray_chk.GetValue(),
             "debug_mode": self.debug_mode_chk.GetValue(),
+            "auto_check_updates": self.auto_update_chk.GetValue(),
             "active_provider": self.provider_choice.GetStringSelection(),
             "providers": providers,
         }

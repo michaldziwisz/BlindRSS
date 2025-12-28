@@ -1,0 +1,9 @@
+APP_NAME = "BlindRSS"
+EXE_NAME = "BlindRSS.exe"
+
+GITHUB_OWNER = "serrebi"
+GITHUB_REPO = "BlindRSS"
+
+UPDATE_MANIFEST_NAME = "BlindRSS-update.json"
+UPDATE_ASSET_PREFIX = "BlindRSS"
+UPDATE_ASSET_EXTENSION = ".zip"
