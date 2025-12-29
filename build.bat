@@ -194,7 +194,7 @@ set "SIGNING_THUMBPRINT="
 if defined SIGN_CERT_THUMBPRINT (
     set "SIGNING_THUMBPRINT=%SIGN_CERT_THUMBPRINT%"
 ) else (
-    for /f "usebackq tokens=2 delims=:" %%A in (`"%SIGNTOOL_EXE%" verify /pa /v "%EXE_PATH%" ^| findstr /i /c:"SHA1 hash"`) do (
+    for /f "tokens=2 delims=:" %%A in ('"%SIGNTOOL_EXE%" verify /pa /v "%EXE_PATH%" ^| findstr /i /c:"SHA1 hash"') do (
         if not defined SIGNING_THUMBPRINT set "SIGNING_THUMBPRINT=%%A"
     )
     if defined SIGNING_THUMBPRINT set "SIGNING_THUMBPRINT=!SIGNING_THUMBPRINT: =!"
