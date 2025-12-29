@@ -194,9 +194,7 @@ set "SIGNING_THUMBPRINT="
 if defined SIGN_CERT_THUMBPRINT (
     set "SIGNING_THUMBPRINT=%SIGN_CERT_THUMBPRINT%"
 ) else (
-    for /f "tokens=2 delims=:" %%A in ('cmd /c ""%SIGNTOOL_EXE%" verify /pa /v "%EXE_PATH%" ^| findstr /i /c:"SHA1 hash""') do (
-        if not defined SIGNING_THUMBPRINT set "SIGNING_THUMBPRINT=%%A"
-    )
+    for /f "usebackq delims=" %%A in (`"%TOOL_PY%" -c "import re, subprocess; exe=r'%EXE_PATH%'; tool=r'%SIGNTOOL_EXE%'; result=subprocess.run([tool,'verify','/pa','/v',exe], capture_output=True, text=True); data=(result.stdout or '') + (result.stderr or ''); m=re.search(r'SHA1 hash:\\s*([0-9A-Fa-f]{40})', data); print(m.group(1) if m else '')"`) do set "SIGNING_THUMBPRINT=%%A"
     if defined SIGNING_THUMBPRINT set "SIGNING_THUMBPRINT=!SIGNING_THUMBPRINT: =!"
 )
 exit /b 0
