@@ -213,9 +213,11 @@ copy /Y "%ZIP_PATH%" "%SCRIPT_DIR%BlindRSS.zip" >nul
 exit /b 0
 
 :hash_zip
-for /f "tokens=* delims=" %%A in ('certutil -hashfile "%ZIP_PATH%" SHA256 ^| findstr /v /c:"hash of file" ^| findstr /v /c:"CertUtil"') do (
-    if not defined ZIP_SHA set "ZIP_SHA=%%A"
-)
+set "ZIP_SHA="
+set "ZIP_HASH_FILE=%TEMP%\\BlindRSS_zip_hash.txt"
+"%TOOL_PY%" -c "import hashlib, pathlib; p=r'%ZIP_PATH%'; h=hashlib.sha256(); f=open(p,'rb'); [h.update(chunk) for chunk in iter(lambda: f.read(1024*1024), b'')]; f.close(); pathlib.Path(r'!ZIP_HASH_FILE!').write_text(h.hexdigest())"
+if exist "!ZIP_HASH_FILE!" set /p ZIP_SHA=<"!ZIP_HASH_FILE!"
+if exist "!ZIP_HASH_FILE!" del /f /q "!ZIP_HASH_FILE!" >nul 2>&1
 if not defined ZIP_SHA (
     echo [X] Failed to compute SHA-256.
     exit /b 1
