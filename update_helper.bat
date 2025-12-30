@@ -62,6 +62,9 @@ echo [BlindRSS Update] Applying update...
 call :move_with_retry "%STAGING_DIR%" "%INSTALL_DIR%" 30
 if errorlevel 1 goto :rollback
 
+echo [BlindRSS Update] Restoring user data...
+call :restore_user_data "%BACKUP_DIR%" "%INSTALL_DIR%"
+
 echo [BlindRSS Update] Launching app...
 start "" "%INSTALL_DIR%\%EXE_NAME%"
 exit /b 0
@@ -91,6 +94,63 @@ for /l %%I in (1,1,%RETRIES%) do (
     timeout /t 1 /nobreak >nul
 )
 move /Y "%SRC%" "%DST%" >nul 2>nul
+if errorlevel 1 (
+    endlocal
+    exit /b 1
+)
+endlocal
+exit /b 0
+
+:restore_user_data
+setlocal
+set "OLD_DIR=%~1"
+set "NEW_DIR=%~2"
+
+if "%OLD_DIR%"=="" goto :restore_done
+if "%NEW_DIR%"=="" goto :restore_done
+if not exist "%OLD_DIR%" goto :restore_done
+if not exist "%NEW_DIR%" goto :restore_done
+
+rem Preserve config + database across updates. These live alongside the EXE in portable mode.
+if exist "%OLD_DIR%\config.json" (
+    call :copy_with_retry "%OLD_DIR%\config.json" "%NEW_DIR%\config.json" 15
+)
+
+for %%F in (rss.db rss.db-wal rss.db-shm rss.db-journal) do (
+    if exist "%OLD_DIR%\%%F" (
+        call :copy_with_retry "%OLD_DIR%\%%F" "%NEW_DIR%\%%F" 15
+    )
+)
+
+rem Preserve default downloads folder when using portable defaults.
+if exist "%OLD_DIR%\podcasts" (
+    if not exist "%NEW_DIR%\podcasts" (
+        move /Y "%OLD_DIR%\podcasts" "%NEW_DIR%\podcasts" >nul 2>nul
+        if errorlevel 1 (
+            xcopy "%OLD_DIR%\podcasts" "%NEW_DIR%\podcasts\" /E /I /Y >nul 2>nul
+        )
+    )
+)
+
+:restore_done
+endlocal
+exit /b 0
+
+:copy_with_retry
+setlocal
+set "SRC=%~1"
+set "DST=%~2"
+set "RETRIES=%~3"
+if "%RETRIES%"=="" set "RETRIES=15"
+for /l %%I in (1,1,%RETRIES%) do (
+    copy /Y "%SRC%" "%DST%" >nul 2>nul
+    if not errorlevel 1 (
+        endlocal
+        exit /b 0
+    )
+    timeout /t 1 /nobreak >nul
+)
+copy /Y "%SRC%" "%DST%" >nul 2>nul
 if errorlevel 1 (
     endlocal
     exit /b 1
