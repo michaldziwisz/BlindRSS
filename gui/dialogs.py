@@ -440,7 +440,7 @@ class FeedSearchDialog(wx.Dialog):
 
         # Attribution / Help
         help_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        help_sizer.Add(wx.StaticText(self, label="Aggregates results from: iTunes, gPodder, Feedly, Feedsearch.dev, NewsBlur, Reddit, BlindRSS"), 0, wx.ALL, 5)
+        help_sizer.Add(wx.StaticText(self, label="Aggregates results from: iTunes, gPodder, Feedly, Feedsearch.dev, NewsBlur, Reddit, Fediverse, BlindRSS"), 0, wx.ALL, 5)
         sizer.Add(help_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 5)
         
         # Buttons
@@ -508,7 +508,10 @@ class FeedSearchDialog(wx.Dialog):
         # 5. Reddit (Subreddits)
         launch(self._search_reddit, "Reddit")
 
-        # 6. Feedsearch.dev + BlindRSS (URL based)
+        # 6. Fediverse (Lemmy/Kbin)
+        launch(self._search_fediverse, "Fediverse")
+
+        # 7. Feedsearch.dev + BlindRSS (URL based)
         # Only run these if it looks like a URL or domain, OR if user wants broad search
         # Feedsearch.dev claims to search by URL. If we pass a keyword, it might fail, but let's try.
         # BlindRSS discovery is strictly URL based.
@@ -672,6 +675,67 @@ class FeedSearchDialog(wx.Dialog):
                         "url": rss_url
                     })
                 queue.put(("Reddit", results))
+        except Exception:
+            pass
+
+    def _search_fediverse(self, term, queue):
+        try:
+            import urllib.parse
+            # Query lemmy.world as a gateway to the Fediverse
+            url = f"https://lemmy.world/api/v3/search?q={urllib.parse.quote(term)}&type_=Communities&sort=TopAll&limit=15"
+            headers = {"User-Agent": "BlindRSS/1.0"}
+            resp = utils.safe_requests_get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                results = []
+                # Structure: { "communities": [ { "community": { ... }, "counts": { ... } } ] }
+                comms = data.get("communities", [])
+                for c in comms:
+                    comm = c.get("community", {})
+                    counts = c.get("counts", {})
+                    
+                    title = comm.get("title")
+                    name = comm.get("name")
+                    actor_id = comm.get("actor_id")
+                    
+                    if not actor_id: continue
+                    
+                    # Distinguish Lemmy vs Kbin vs Mbin etc.
+                    # Actor ID is usually the community URL: https://instance/c/name or https://instance/m/name
+                    # RSS Construction:
+                    # Lemmy: https://instance/feeds/c/name.xml
+                    # Kbin: https://instance/m/name/rss (or .xml)
+                    
+                    rss_url = ""
+                    provider_label = "Fediverse"
+                    
+                    if "/c/" in actor_id:
+                        # Likely Lemmy
+                        # Actor: https://lemmy.ml/c/linux
+                        # RSS: https://lemmy.ml/feeds/c/linux.xml
+                        base = actor_id.split("/c/")[0]
+                        comm_name = actor_id.split("/c/")[1]
+                        rss_url = f"{base}/feeds/c/{comm_name}.xml"
+                        provider_label = "Lemmy"
+                    elif "/m/" in actor_id:
+                        # Likely Kbin
+                        # Actor: https://kbin.social/m/gaming
+                        # RSS: https://kbin.social/m/gaming/rss
+                        rss_url = f"{actor_id}/rss"
+                        provider_label = "Kbin"
+                    else:
+                        # Fallback/Unknown
+                        continue
+
+                    subs = counts.get("subscribers")
+                    desc = f"{name} ({subs} subs)" if subs else name
+                    
+                    results.append({
+                        "title": title or name,
+                        "detail": f"{provider_label} - {desc}",
+                        "url": rss_url
+                    })
+                queue.put(("Fediverse", results))
         except Exception:
             pass
 

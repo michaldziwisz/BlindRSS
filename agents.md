@@ -136,6 +136,7 @@ The "Find a Podcast or RSS Feed" dialog aggregates results from multiple public 
     *   **Feedly:** Keyword/URL search (`/v3/search/feeds`).
     *   **NewsBlur:** Feed autocomplete/lookup.
     *   **Reddit:** Subreddit search (`/r/{name}/.rss`).
+    *   **Fediverse (Lemmy/Kbin):** Search via `lemmy.world` API.
     *   **Feedsearch.dev:** URL -> Feed discovery.
     *   **BlindRSS Discovery:** Local URL probing and HTML scraping (for `xml` links).
 *   **Reference / External Tools (Not in Unified Search):**
