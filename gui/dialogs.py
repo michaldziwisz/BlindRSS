@@ -417,6 +417,7 @@ class FeedSearchDialog(wx.Dialog):
             self,
             choices=[
                 "Apple Podcasts (iTunes) - keyword search",
+                "gPodder.net - keyword search",
                 "Feedsearch.dev - find feeds for a website URL",
                 "BlindRSS - discover feeds from a website URL",
             ],
@@ -507,14 +508,16 @@ class FeedSearchDialog(wx.Dialog):
         except Exception:
             idx = 0
         if idx == 1:
-            return "feedsearch"
+            return "gpodder"
         if idx == 2:
+            return "feedsearch"
+        if idx == 3:
             return "builtin"
         return "itunes"
 
     def on_provider_changed(self, event):
         key = self._provider_key()
-        if key == "itunes":
+        if key in ("itunes", "gpodder"):
             self.input_lbl.SetLabel("Search term:")
         else:
             self.input_lbl.SetLabel("Website URL:")
@@ -591,6 +594,11 @@ class FeedSearchDialog(wx.Dialog):
                 resp = utils.safe_requests_get(url, timeout=10)
                 resp.raise_for_status()
                 data = resp.json()
+            elif provider == "gpodder":
+                url = f"https://gpodder.net/search.json?q={urllib.parse.quote(term)}"
+                resp = utils.safe_requests_get(url, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
             elif provider == "feedsearch":
                 url = f"https://feedsearch.dev/api/v1/search?url={urllib.parse.quote(term)}"
                 resp = utils.safe_requests_get(url, timeout=15)
@@ -655,6 +663,20 @@ class FeedSearchDialog(wx.Dialog):
                 
                 if feed_url:
                     self.results_data.append({"title": title, "detail": author, "url": feed_url})
+        elif provider == "gpodder":
+            items = data if isinstance(data, list) else []
+            for it in items[:250]:
+                if not isinstance(it, dict):
+                    continue
+                feed_url = it.get("url")
+                if not isinstance(feed_url, str) or not feed_url.strip():
+                    continue
+                title = it.get("title") if isinstance(it.get("title"), str) and it.get("title").strip() else feed_url.strip()
+                author = it.get("author") if isinstance(it.get("author"), str) else ""
+                subs = it.get("subscribers")
+                if subs is not None:
+                    author = (author + "  " if author else "") + f"Subscribers: {subs}"
+                self.results_data.append({"title": title, "detail": author, "url": feed_url.strip()})
         elif provider == "feedsearch":
             items = data if isinstance(data, list) else []
 
