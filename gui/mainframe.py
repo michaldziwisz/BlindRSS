@@ -356,10 +356,10 @@ class MainFrame(wx.Frame):
         player_vol_down_item = player_menu.Append(wx.ID_ANY, "Volume Down (Ctrl+Down)", "Decrease volume")
         
         tools_menu = wx.Menu()
-        settings_item = tools_menu.Append(wx.ID_PREFERENCES, "&Settings...", "Configure application")
-        check_updates_item = tools_menu.Append(wx.ID_ANY, "Check for &Updates...", "Check for new versions")
-        tools_menu.AppendSeparator()
         find_feed_item = tools_menu.Append(wx.ID_ANY, "Find a &Podcast or RSS Feed...", "Find and add a podcast or RSS feed")
+        tools_menu.AppendSeparator()
+        check_updates_item = tools_menu.Append(wx.ID_ANY, "Check for &Updates...", "Check for new versions")
+        settings_item = tools_menu.Append(wx.ID_PREFERENCES, "&Settings...", "Configure application")
         
         menubar.Append(file_menu, "&File")
         menubar.Append(view_menu, "&View")
