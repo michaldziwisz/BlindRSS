@@ -425,10 +425,18 @@ class MinifluxProvider(RSSProvider):
 
     def add_feed(self, url: str, category: str = "Uncategorized") -> bool:
         from core.discovery import get_ytdlp_feed_url, discover_feed
+        from core import odysee as odysee_mod
+        from core import rumble as rumble_mod
         
         # Try to get native feed URL for media sites (e.g. YouTube)
         # Miniflux can sometimes fail to discover these natively, leading to 500 errors.
         real_url = get_ytdlp_feed_url(url) or discover_feed(url) or url
+        
+        # Explicitly normalize Odysee/Rumble URLs to their RSS/Listing formats
+        # Odysee: converts channel URL to RSS XML (Miniflux can parse XML).
+        # Rumble: standardizes URL path (Miniflux might still fail if blocked, but this is best effort).
+        real_url = odysee_mod.normalize_odysee_feed_url(real_url)
+        real_url = rumble_mod.normalize_rumble_feed_url(real_url)
         
         cats = self._req("GET", "/v1/categories")
         if not cats:
@@ -443,6 +451,11 @@ class MinifluxProvider(RSSProvider):
         
         data = {"feed_url": real_url, "category_id": category_id}
         res = self._req("POST", "/v1/feeds", json=data)
+        
+        # If Miniflux fails (likely on Rumble), warn the user but don't crash.
+        if res is None and rumble_mod.is_rumble_url(real_url):
+            log.warning(f"Miniflux failed to add Rumble feed: {real_url}. Miniflux server may be blocked by Rumble.")
+            
         return res is not None
 
     def remove_feed(self, feed_id: str) -> bool:
