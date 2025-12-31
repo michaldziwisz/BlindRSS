@@ -278,19 +278,8 @@ def _verify_authenticode_signature(exe_path: str, allowed_thumbprints: Iterable[
     return True, ""
 
 
-def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, staging_root: str) -> Tuple[bool, str]:
+def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, staging_root: str, debug_mode: bool = False) -> Tuple[bool, str]:
     try:
-        cmd = [
-            "cmd",
-            "/c",
-            "start",
-            "",
-            helper_path,
-            str(parent_pid),
-            install_dir,
-            staging_root,
-            EXE_NAME,
-        ]
         helper_cwd = None
         try:
             helper_cwd = os.path.dirname(helper_path)
@@ -301,13 +290,48 @@ def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, s
         # refuse to move/rename it during the swap (current-directory handle lock).
         if not helper_cwd or not os.path.isdir(helper_cwd):
             helper_cwd = tempfile.gettempdir()
-        subprocess.Popen(cmd, cwd=helper_cwd)
+
+        if not debug_mode:
+            # Invisible execution
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = (
+                    subprocess.DETACHED_PROCESS | 
+                    subprocess.CREATE_NEW_PROCESS_GROUP | 
+                    subprocess.CREATE_NO_WINDOW
+                )
+            
+            cmd = [
+                "cmd",
+                "/c",
+                helper_path,
+                str(parent_pid),
+                install_dir,
+                staging_root,
+                EXE_NAME,
+            ]
+            subprocess.Popen(cmd, cwd=helper_cwd, creationflags=creationflags, close_fds=True)
+        else:
+            # Visible window for debugging
+            cmd = [
+                "cmd",
+                "/c",
+                "start",
+                "",
+                helper_path,
+                str(parent_pid),
+                install_dir,
+                staging_root,
+                EXE_NAME,
+            ]
+            subprocess.Popen(cmd, cwd=helper_cwd)
+            
         return True, ""
     except Exception as e:
         return False, f"Failed to start update helper: {e}"
 
 
-def download_and_apply_update(info: UpdateInfo) -> Tuple[bool, str]:
+def download_and_apply_update(info: UpdateInfo, debug_mode: bool = False) -> Tuple[bool, str]:
     if not is_update_supported():
         return False, "Auto-update is only available in the packaged Windows build."
 
@@ -357,7 +381,7 @@ def download_and_apply_update(info: UpdateInfo) -> Tuple[bool, str]:
     except Exception:
         helper_run_path = helper_path
 
-    ok, msg = _launch_update_helper(helper_run_path, os.getpid(), install_dir, staging_root)
+    ok, msg = _launch_update_helper(helper_run_path, os.getpid(), install_dir, staging_root, debug_mode=debug_mode)
     if not ok:
         return False, msg
 

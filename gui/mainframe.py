@@ -2183,7 +2183,12 @@ class MainFrame(wx.Frame):
         threading.Thread(target=self._update_install_thread, args=(info,), daemon=True).start()
 
     def _update_install_thread(self, info: updater.UpdateInfo):
-        ok, msg = updater.download_and_apply_update(info)
+        debug_mode = False
+        try:
+            debug_mode = bool(self.config_manager.get("debug_mode", False))
+        except Exception:
+            pass
+        ok, msg = updater.download_and_apply_update(info, debug_mode=debug_mode)
         wx.CallAfter(self._finish_update_install, ok, msg)
 
     def _finish_update_install(self, ok: bool, msg: str):
