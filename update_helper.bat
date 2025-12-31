@@ -40,14 +40,7 @@ if not exist "%STAGING_DIR%" (
 )
 
 echo [BlindRSS Update] Waiting for process %PID% to exit...
-:wait_loop
-for /f "tokens=1" %%A in ('tasklist /FI "PID eq %PID%" /NH') do (
-    if /I not "%%A"=="INFO:" (
-        timeout /t 1 /nobreak >nul
-        goto wait_loop
-    )
-)
-timeout /t 1 /nobreak >nul
+powershell -NoProfile -Command "Wait-Process -Id %PID% -ErrorAction SilentlyContinue"
 
 for /f %%T in ('powershell -NoProfile -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set STAMP=%%T
 set BACKUP_DIR=%INSTALL_DIR%_backup_%STAMP%
@@ -55,14 +48,14 @@ set BACKUP_DIR=%INSTALL_DIR%_backup_%STAMP%
 if exist "%BACKUP_DIR%" rd /s /q "%BACKUP_DIR%"
 
 echo [BlindRSS Update] Backing up current install...
-call :move_with_retry "%INSTALL_DIR%" "%BACKUP_DIR%" 60
+call :move_with_retry "%INSTALL_DIR%" "%BACKUP_DIR%" 20
 if errorlevel 1 (
     echo [X] Failed to backup install directory.
     goto :rollback
 )
 
 echo [BlindRSS Update] Applying update...
-call :move_with_retry "%STAGING_DIR%" "%INSTALL_DIR%" 60
+call :move_with_retry "%STAGING_DIR%" "%INSTALL_DIR%" 20
 if errorlevel 1 (
     echo [X] Failed to move staging directory to install directory.
     goto :rollback
@@ -79,7 +72,7 @@ exit /b 0
 echo [BlindRSS Update] Update failed. Restoring backup...
 if exist "%BACKUP_DIR%" (
     if not exist "%INSTALL_DIR%" (
-        move /Y "%BACKUP_DIR%" "%INSTALL_DIR%" >nul
+        move /Y "%BACKUP_DIR%" "%INSTALL_DIR%" >nul 2>nul
     )
 )
 start "" "%INSTALL_DIR%\%EXE_NAME%"
@@ -90,14 +83,15 @@ setlocal
 set "SRC=%~1"
 set "DST=%~2"
 set "RETRIES=%~3"
-if "%RETRIES%"=="" set "RETRIES=30"
+if "%RETRIES%"=="" set "RETRIES=20"
 for /l %%I in (1,1,%RETRIES%) do (
     move /Y "%SRC%" "%DST%" >nul 2>nul
     if not errorlevel 1 (
         endlocal
         exit /b 0
     )
-    timeout /t 1 /nobreak >nul
+    rem Exponential-ish backoff to reduce CPU spinning
+    if %%I lss 5 ( timeout /t 1 /nobreak >nul ) else ( timeout /t 2 /nobreak >nul )
 )
 move /Y "%SRC%" "%DST%" >nul 2>nul
 if errorlevel 1 (
