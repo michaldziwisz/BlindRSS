@@ -247,6 +247,7 @@ def scan_audio_for_silence(
     vad_aggressiveness: int = 2,
     vad_frame_ms: int = 30,
     merge_gap_ms: int = 200,
+    headers: Optional[dict] = None,
 ) -> List[Tuple[int, int]]:
     """
     Use ffmpeg to decode an arbitrary URL/file to PCM and detect silent spans.
@@ -276,6 +277,26 @@ def scan_audio_for_silence(
         "-hide_banner",
         "-loglevel",
         "error",
+    ]
+
+    # Use custom headers if provided
+    if headers:
+        header_str = ""
+        for k, v in headers.items():
+            if k.lower() == "user-agent":
+                cmd.extend(["-user_agent", str(v)])
+            else:
+                header_str += f"{k}: {v}\r\n"
+        if header_str:
+            cmd.extend(["-headers", header_str])
+    else:
+        # Default user agent if none provided
+        cmd.extend([
+            "-user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ])
+
+    cmd.extend([
         "-i",
         source,
         "-ac",
@@ -285,7 +306,7 @@ def scan_audio_for_silence(
         "-f",
         "s16le",
         "-",
-    ]
+    ])
     import platform
     creationflags = 0
     startupinfo = None

@@ -782,7 +782,7 @@ class PlayerFrame(wx.Frame):
         self._silence_skip_last_target_ms = None
         self._silence_skip_last_seek_ts = 0.0
 
-    def _start_silence_scan(self, url: str, load_seq: int) -> None:
+    def _start_silence_scan(self, url: str, load_seq: int, headers: dict = None) -> None:
         if not self.config_manager.get("skip_silence", False):
             return
         if not url or self.is_casting:
@@ -815,6 +815,7 @@ class PlayerFrame(wx.Frame):
                     vad_frame_ms=vad_frame_ms,
                     merge_gap_ms=merge_gap,
                     abort_event=abort_evt,
+                    headers=headers,
                 )
                 if abort_evt.is_set():
                     return
@@ -1198,7 +1199,7 @@ class PlayerFrame(wx.Frame):
             final_url = self._maybe_range_cache_url(final_url, headers=ytdlp_headers)
             self._last_load_chapters = chapters
             self._last_load_title = self.current_title
-            self._start_silence_scan(final_url, int(getattr(self, "_active_load_seq", 0)))
+            self._start_silence_scan(final_url, int(getattr(self, "_active_load_seq", 0)), headers=ytdlp_headers)
             self._load_vlc_url(final_url, load_seq=int(getattr(self,'_active_load_seq',0)))
         
         if chapters:
