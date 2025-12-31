@@ -50,6 +50,7 @@ class MainFrame(wx.Frame):
         self._media_hotkeys = HoldRepeatHotkeys(self, hold_delay_s=2.0, repeat_interval_s=0.12, poll_interval_ms=15)
         
         self._updating_list = False # Flag to ignore selection events during background updates
+        self._updating_tree = False # Flag to ignore tree selection events during rebuilds
         self.selected_article_id = None
         self._update_check_inflight = False
         self._update_install_inflight = False
@@ -768,87 +769,92 @@ class MainFrame(wx.Frame):
             selected_data = hint
             self._selection_hint = None
 
-        self.tree.Freeze() # Stop updates while rebuilding
-        self.tree.DeleteChildren(self.all_feeds_node)
-        self.tree.DeleteChildren(self.root)
+        frozen = False
+        self._updating_tree = True
+        try:
+            self.tree.Freeze() # Stop updates while rebuilding
+            frozen = True
+            self.tree.DeleteChildren(self.all_feeds_node)
+            self.tree.DeleteChildren(self.root)
 
-        # Map feed id -> Feed and Tree items for quick lookup (downloads, labeling)
-        self.feed_map = {f.id: f for f in feeds}
-        self.feed_nodes = {}
-        
-        # Special Views
-        self.all_feeds_node = self.tree.AppendItem(self.root, "All Feeds")
-        self.tree.SetItemData(self.all_feeds_node, {"type": "all", "id": "all"})
-
-        self.unread_node = self.tree.AppendItem(self.root, "Unread Articles")
-        self.tree.SetItemData(self.unread_node, {"type": "all", "id": "unread:all"})
-        
-        self.read_node = self.tree.AppendItem(self.root, "Read Articles")
-        self.tree.SetItemData(self.read_node, {"type": "all", "id": "read:all"})
-        
-        # Group by category
-        categories = {c: [] for c in all_cats} # Initialize with all known categories
-        
-        for feed in feeds:
-            cat = feed.category or "Uncategorized"
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(feed)
+            # Map feed id -> Feed and Tree items for quick lookup (downloads, labeling)
+            self.feed_map = {f.id: f for f in feeds}
+            self.feed_nodes = {}
             
-        # Sort categories alphabetically
-        sorted_cats = sorted(categories.keys())
-        
-        item_to_select = None
+            # Special Views
+            self.all_feeds_node = self.tree.AppendItem(self.root, "All Feeds")
+            self.tree.SetItemData(self.all_feeds_node, {"type": "all", "id": "all"})
 
-        for cat in sorted_cats:
-            cat_feeds = categories[cat]
-            # Sort feeds alphabetically by title
-            cat_feeds.sort(key=lambda f: (f.title or "").lower())
+            self.unread_node = self.tree.AppendItem(self.root, "Unread Articles")
+            self.tree.SetItemData(self.unread_node, {"type": "all", "id": "unread:all"})
             
-            cat_node = self.tree.AppendItem(self.root, cat)
-            cat_data = {"type": "category", "id": cat}
-            self.tree.SetItemData(cat_node, cat_data)
+            self.read_node = self.tree.AppendItem(self.root, "Read Articles")
+            self.tree.SetItemData(self.read_node, {"type": "all", "id": "read:all"})
             
-            # Check if this category was selected
-            if selected_data and selected_data["type"] == "category" and selected_data["id"] == cat:
-                item_to_select = cat_node
-
-            for feed in cat_feeds:
-                title = f"{feed.title} ({feed.unread_count})" if feed.unread_count > 0 else feed.title
-                node = self.tree.AppendItem(cat_node, title)
-                feed_data = {"type": "feed", "id": feed.id}
-                self.tree.SetItemData(node, feed_data)
-                self.feed_nodes[feed.id] = node
+            # Group by category
+            categories = {c: [] for c in all_cats} # Initialize with all known categories
+            
+            for feed in feeds:
+                cat = feed.category or "Uncategorized"
+                if cat not in categories:
+                    categories[cat] = []
+                categories[cat].append(feed)
                 
-                # Check if this feed was selected
-                if selected_data and selected_data["type"] == "feed" and selected_data["id"] == feed.id:
-                    item_to_select = node
+            # Sort categories alphabetically
+            sorted_cats = sorted(categories.keys())
+            
+            item_to_select = None
 
-        self.tree.ExpandAll()
+            for cat in sorted_cats:
+                cat_feeds = categories[cat]
+                # Sort feeds alphabetically by title
+                cat_feeds.sort(key=lambda f: (f.title or "").lower())
+                
+                cat_node = self.tree.AppendItem(self.root, cat)
+                cat_data = {"type": "category", "id": cat}
+                self.tree.SetItemData(cat_node, cat_data)
+                
+                # Check if this category was selected
+                if selected_data and selected_data["type"] == "category" and selected_data["id"] == cat:
+                    item_to_select = cat_node
 
-        # Restore selection (default to All Feeds on first load so the list populates)
-        selection_target = None
-        if selected_data and selected_data["type"] == "all":
-            if selected_data.get("id") == "unread:all":
-                selection_target = self.unread_node
-            elif selected_data.get("id") == "read:all":
-                selection_target = self.read_node
+                for feed in cat_feeds:
+                    title = f"{feed.title} ({feed.unread_count})" if feed.unread_count > 0 else feed.title
+                    node = self.tree.AppendItem(cat_node, title)
+                    feed_data = {"type": "feed", "id": feed.id}
+                    self.tree.SetItemData(node, feed_data)
+                    self.feed_nodes[feed.id] = node
+                    
+                    # Check if this feed was selected
+                    if selected_data and selected_data["type"] == "feed" and selected_data["id"] == feed.id:
+                        item_to_select = node
+
+            self.tree.ExpandAll()
+
+            # Restore selection (default to All Feeds on first load so the list populates)
+            selection_target = None
+            if selected_data and selected_data["type"] == "all":
+                if selected_data.get("id") == "unread:all":
+                    selection_target = self.unread_node
+                elif selected_data.get("id") == "read:all":
+                    selection_target = self.read_node
+                else:
+                    selection_target = self.all_feeds_node
+            elif item_to_select and item_to_select.IsOk():
+                selection_target = item_to_select
             else:
                 selection_target = self.all_feeds_node
-        elif item_to_select and item_to_select.IsOk():
-            selection_target = item_to_select
-        else:
-            selection_target = self.all_feeds_node
 
-        if selection_target and selection_target.IsOk():
-            # Select silently to avoid triggering EVT_TREE_SEL_CHANGED -> _select_view
-            self._updating_list = True
-            try:
+            if selection_target and selection_target.IsOk():
+                # Ignore transient EVT_TREE_SEL_CHANGED during rebuild; we refresh explicitly below.
                 self.tree.SelectItem(selection_target)
-            finally:
-                self._updating_list = False
-
-        self.tree.Thaw() # Resume updates
+        finally:
+            if frozen:
+                try:
+                    self.tree.Thaw() # Resume updates
+                except Exception:
+                    pass
+            self._updating_tree = False
 
         # Ensure article list refreshes after auto/remote refresh.
         # Re-selecting items on a rebuilt tree does not always emit EVT_TREE_SEL_CHANGED,
@@ -910,6 +916,12 @@ class MainFrame(wx.Frame):
             self._begin_articles_load(feed_id, full_load=True, clear_list=True)
 
     def on_tree_select(self, event):
+        if getattr(self, "_updating_tree", False):
+            try:
+                event.Skip()
+            except Exception:
+                pass
+            return
         item = event.GetItem()
         feed_id = self._get_feed_id_from_tree_item(item)
         if not feed_id:
