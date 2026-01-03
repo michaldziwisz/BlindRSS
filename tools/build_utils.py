@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _extract_requirement_name(line: str):
-    stripped = (line or "").strip()
+    stripped = line.strip()
     if not stripped or stripped.startswith("#"):
         return None
     if stripped.startswith(("-", "--")):

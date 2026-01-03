@@ -5,6 +5,7 @@ import threading
 import time
 import os
 import re
+import logging
 from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 # from dateutil import parser as date_parser  # Removed unused import
@@ -18,6 +19,8 @@ from core import utils
 from core import article_extractor
 from core import updater
 import core.discovery
+
+log = logging.getLogger(__name__)
 
 
 class MainFrame(wx.Frame):
@@ -659,8 +662,8 @@ class MainFrame(wx.Frame):
     def _supports_favorites(self) -> bool:
         try:
             return bool(getattr(self.provider, "supports_favorites", lambda: False)())
-        except Exception as e:
-            print(f"Error checking provider support for favorites: {e}")
+        except Exception:
+            log.exception("Error checking provider support for favorites")
             return False
 
     def _get_selected_article_index(self) -> int:
@@ -687,8 +690,8 @@ class MainFrame(wx.Frame):
                     for a in (st.get("articles") or []):
                         if getattr(a, "id", None) == article_id:
                             a.is_favorite = bool(is_favorite)
-        except Exception as e:
-            print(f"Error syncing favorite flag in cached views: {e}")
+        except Exception:
+            log.exception("Error syncing favorite flag in cached views")
 
     def _update_cached_favorites_view(self, article, is_favorite: bool) -> None:
         try:
@@ -714,32 +717,42 @@ class MainFrame(wx.Frame):
                 fav_st["articles"] = fav_articles
                 fav_st["id_set"] = fav_id_set
                 fav_st["last_access"] = time.time()
-        except Exception as e:
-            print(f"Error updating cached favorites view: {e}")
+        except Exception:
+            log.exception("Error updating cached favorites view")
+
+    def _decrement_view_total_if_present(self, view_id: str) -> None:
+        try:
+            st = self._ensure_view_state(view_id)
+            total = st.get("total")
+            if total is None:
+                return
+            st["total"] = max(0, int(total) - 1)
+        except Exception:
+            log.exception("Error decrementing view total for view_id '%s'", view_id)
 
     def _remove_article_from_current_list(self, idx: int) -> None:
         froze = False
         try:
             self.list_ctrl.Freeze()
             froze = True
-        except Exception as e:
-            print(f"Error freezing list_ctrl: {e}")
+        except Exception:
+            log.exception("Error freezing list_ctrl")
 
         try:
             try:
                 self.current_articles.pop(idx)
-            except Exception as e:
-                print(f"Error popping article from current_articles at index {idx}: {e}")
+            except Exception:
+                log.exception("Error popping article from current_articles at index %s", idx)
             try:
                 self.list_ctrl.DeleteItem(idx)
-            except Exception as e:
-                print(f"Error deleting item from list_ctrl at index {idx}: {e}")
+            except Exception:
+                log.exception("Error deleting item from list_ctrl at index %s", idx)
         finally:
             if froze:
                 try:
                     self.list_ctrl.Thaw()
-                except Exception as e:
-                    print(f"Error thawing list_ctrl: {e}")
+                except Exception:
+                    log.exception("Error thawing list_ctrl")
 
     def _show_empty_articles_state(self) -> None:
         try:
@@ -748,8 +761,8 @@ class MainFrame(wx.Frame):
             self.list_ctrl.InsertItem(0, "No articles found.")
             self.content_ctrl.Clear()
             self.selected_article_id = None
-        except Exception as e:
-            print(f"Error showing empty articles state: {e}")
+        except Exception:
+            log.exception("Error showing empty articles state")
 
     def _update_current_view_cache(self, view_id: str) -> None:
         try:
@@ -757,8 +770,8 @@ class MainFrame(wx.Frame):
             st["articles"] = self.current_articles
             st["id_set"] = {a.id for a in (self.current_articles or [])}
             st["last_access"] = time.time()
-        except Exception as e:
-            print(f"Error updating current view cache for view_id '{view_id}': {e}")
+        except Exception:
+            log.exception("Error updating current view cache for view_id '%s'", view_id)
 
     def on_toggle_favorite(self, event=None):
         if not self._supports_favorites():
@@ -796,15 +809,7 @@ class MainFrame(wx.Frame):
 
             # Keep cache for the current view consistent.
             self._update_current_view_cache(fid)
-            try:
-                st = self._ensure_view_state(fid)
-                if st.get("total") is not None:
-                    try:
-                        st["total"] = max(0, int(st["total"]) - 1)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            self._decrement_view_total_if_present(fid)
 
     def on_rename_category(self, old_title):
         dlg = wx.TextEntryDialog(self, f"Rename category '{old_title}' to:", "Rename Category", value=old_title)
