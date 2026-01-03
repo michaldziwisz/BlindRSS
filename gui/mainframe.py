@@ -390,12 +390,15 @@ class MainFrame(wx.Frame):
 
     def init_shortcuts(self):
         # Add accelerator for Ctrl+R (F5 is handled by menu item text usually, but being explicit helps)
+        self._toggle_favorite_id = int(wx.NewIdRef())
         entries = [
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('R'), wx.ID_REFRESH),
-            wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_F5, wx.ID_REFRESH)
+            wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_F5, wx.ID_REFRESH),
+            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('D'), self._toggle_favorite_id),
         ]
         accel = wx.AcceleratorTable(entries)
         self.SetAcceleratorTable(accel)
+        self.Bind(wx.EVT_MENU, self.on_toggle_favorite, id=self._toggle_favorite_id)
 
 
     def on_char_hook(self, event: wx.KeyEvent) -> None:
@@ -618,6 +621,12 @@ class MainFrame(wx.Frame):
             if article_for_menu.media_url:
                 download_item = menu.Append(wx.ID_ANY, "Download")
                 self.Bind(wx.EVT_MENU, lambda e, a=article_for_menu: self.on_download_article(a), download_item)
+            try:
+                if getattr(self.provider, "supports_favorites", lambda: False)() and hasattr(self, "_toggle_favorite_id"):
+                    label = "Remove from Favorites" if getattr(article_for_menu, "is_favorite", False) else "Add to Favorites"
+                    menu.Append(self._toggle_favorite_id, f"{label}\tCtrl+D")
+            except Exception:
+                pass
         
         # Bindings for list menu items need to use the current idx or selected article
         # on_article_activate (event) needs an event object, but I can re-create one or just call its core logic
@@ -646,6 +655,116 @@ class MainFrame(wx.Frame):
             if wx.TheClipboard.Open():
                 wx.TheClipboard.SetData(wx.TextDataObject(article.url))
                 wx.TheClipboard.Close()
+
+    def on_toggle_favorite(self, event=None):
+        try:
+            if not getattr(self.provider, "supports_favorites", lambda: False)():
+                return
+        except Exception:
+            return
+
+        idx = wx.NOT_FOUND
+        try:
+            idx = self.list_ctrl.GetFirstSelected()
+        except Exception:
+            idx = wx.NOT_FOUND
+        if idx == wx.NOT_FOUND:
+            try:
+                idx = self.list_ctrl.GetFocusedItem()
+            except Exception:
+                idx = wx.NOT_FOUND
+
+        if idx == wx.NOT_FOUND:
+            return
+        if self._is_load_more_row(idx):
+            return
+        if idx < 0 or idx >= len(self.current_articles):
+            return
+
+        article = self.current_articles[idx]
+        try:
+            new_state = self.provider.toggle_favorite(article.id)
+        except Exception:
+            return
+        if new_state is None:
+            return
+
+        article.is_favorite = bool(new_state)
+
+        # Sync favorite flag across cached views for the same article id.
+        try:
+            with getattr(self, "_view_cache_lock", threading.Lock()):
+                for st in (self.view_cache or {}).values():
+                    for a in (st.get("articles") or []):
+                        if getattr(a, "id", None) == article.id:
+                            a.is_favorite = bool(new_state)
+        except Exception:
+            pass
+
+        # Update a cached Favorites view if present.
+        try:
+            fav_view_id = "favorites:all"
+            with getattr(self, "_view_cache_lock", threading.Lock()):
+                fav_st = (self.view_cache or {}).get(fav_view_id)
+                if fav_st is not None:
+                    fav_articles = list(fav_st.get("articles") or [])
+                    fav_id_set = set(fav_st.get("id_set") or set())
+                    if bool(new_state):
+                        if article.id not in fav_id_set:
+                            fav_articles.append(article)
+                            fav_id_set.add(article.id)
+                            fav_articles.sort(key=lambda a: (a.timestamp, a.id), reverse=True)
+                    else:
+                        if article.id in fav_id_set:
+                            fav_id_set.discard(article.id)
+                            fav_articles = [a for a in fav_articles if getattr(a, "id", None) != article.id]
+                    fav_st["articles"] = fav_articles
+                    fav_st["id_set"] = fav_id_set
+                    fav_st["last_access"] = time.time()
+        except Exception:
+            pass
+
+        # If we're in the Favorites view and the item was removed from favorites, drop it from the list.
+        fid = getattr(self, "current_feed_id", "") or ""
+        if (fid.startswith("favorites:") or fid.startswith("fav:")) and not bool(new_state):
+            try:
+                self.list_ctrl.Freeze()
+                try:
+                    self.current_articles.pop(idx)
+                except Exception:
+                    pass
+                try:
+                    self.list_ctrl.DeleteItem(idx)
+                except Exception:
+                    pass
+                self.list_ctrl.Thaw()
+            except Exception:
+                pass
+
+            # If the list is now empty, show an empty-state row.
+            if not self.current_articles:
+                try:
+                    self._remove_loading_more_placeholder()
+                    self.list_ctrl.DeleteAllItems()
+                    self.list_ctrl.InsertItem(0, "No articles found.")
+                    self.content_ctrl.Clear()
+                    self.selected_article_id = None
+                except Exception:
+                    pass
+
+            # Keep cache for the current view consistent.
+            try:
+                st = self._ensure_view_state(fid)
+                st["articles"] = self.current_articles
+                st["id_set"] = {a.id for a in (self.current_articles or [])}
+                st["last_access"] = time.time()
+                if st.get("total") is not None:
+                    try:
+                        st["total"] = max(0, int(st["total"]) - 1)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def on_rename_category(self, old_title):
         dlg = wx.TextEntryDialog(self, f"Rename category '{old_title}' to:", "Rename Category", value=old_title)
@@ -790,6 +909,14 @@ class MainFrame(wx.Frame):
             
             self.read_node = self.tree.AppendItem(self.root, "Read Articles")
             self.tree.SetItemData(self.read_node, {"type": "all", "id": "read:all"})
+
+            self.favorites_node = None
+            try:
+                if getattr(self.provider, "supports_favorites", lambda: False)():
+                    self.favorites_node = self.tree.AppendItem(self.root, "Favorites")
+                    self.tree.SetItemData(self.favorites_node, {"type": "all", "id": "favorites:all"})
+            except Exception:
+                self.favorites_node = None
             
             # Group by category
             categories = {c: [] for c in all_cats} # Initialize with all known categories
@@ -838,6 +965,8 @@ class MainFrame(wx.Frame):
                     selection_target = self.unread_node
                 elif selected_data.get("id") == "read:all":
                     selection_target = self.read_node
+                elif selected_data.get("id") == "favorites:all" and self.favorites_node and self.favorites_node.IsOk():
+                    selection_target = self.favorites_node
                 else:
                     selection_target = self.all_feeds_node
             elif item_to_select and item_to_select.IsOk():
