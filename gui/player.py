@@ -1173,7 +1173,16 @@ class PlayerFrame(wx.Frame):
                     if info is None:
                         raise last_err if last_err else RuntimeError("yt-dlp extraction failed")
 
-                    final_url = info['url']
+                    # Handle playlists/multi-video pages
+                    if 'entries' in info:
+                        entries = list(info['entries'])
+                        if entries:
+                            info = entries[0]
+
+                    final_url = info.get('url')
+                    if not final_url:
+                         raise RuntimeError("No media URL found in yt-dlp info")
+
                     ytdlp_headers = info.get('http_headers', {})
                     self.current_title = info.get('title', title or 'Media Stream')
                 except Exception as e:
