@@ -60,7 +60,7 @@ class MinifluxProvider(RSSProvider):
             # Silence 500 on refresh or general list endpoints as it's often a transient server issue.
             is_silent_endpoint = any(x in endpoint for x in ("refresh", "/feeds", "/entries"))
             if e.response is not None and e.response.status_code == 500 and is_silent_endpoint:
-                log.warning(f"Miniflux endpoint failed for {url} (500). Server might be overloaded.")
+                log.debug(f"Miniflux endpoint failed for {url} (500). Server might be overloaded.")
             else:
                 log.error(f"Miniflux error for {url}: {e}")
             return None
