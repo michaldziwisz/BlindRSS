@@ -37,6 +37,7 @@ def init_db():
             date TEXT,
             author TEXT,
             is_read INTEGER DEFAULT 0,
+            is_favorite INTEGER DEFAULT 0,
             media_url TEXT,
             media_type TEXT,
             FOREIGN KEY(feed_id) REFERENCES feeds(id)
@@ -68,6 +69,16 @@ def init_db():
             
         try:
             c.execute("ALTER TABLE articles ADD COLUMN media_type TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            c.execute("ALTER TABLE articles ADD COLUMN is_favorite INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_articles_is_favorite ON articles (is_favorite)")
         except sqlite3.OperationalError:
             pass
             

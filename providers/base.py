@@ -29,6 +29,23 @@ class RSSProvider(abc.ABC):
     def get_articles(self, feed_id: str) -> List[Article]:
         pass
 
+    # Favorites are optional and currently implemented for the Local provider.
+    def supports_favorites(self) -> bool:
+        return False
+
+    def toggle_favorite(self, article_id: str):
+        """Toggle an article's favorite state.
+
+        Returns:
+            bool: new favorite state
+            None: unsupported or article not found
+        """
+        return None
+
+    def set_favorite(self, article_id: str, is_favorite: bool) -> bool:
+        """Set favorite state for an article (optional)."""
+        return False
+
     def get_articles_page(self, feed_id: str, offset: int = 0, limit: int = 200) -> Tuple[List[Article], int]:
         """Optional pagination helper.
 

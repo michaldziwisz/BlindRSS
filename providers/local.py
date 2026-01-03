@@ -577,17 +577,26 @@ class LocalProvider(RSSProvider):
         try:
             c = conn.cursor()
             
-            # Determine read/unread filter
-            filter_read = None # None=all, 0=unread, 1=read
+            # Determine filters
+            filter_read = None  # None=all, 0=unread, 1=read
+            filter_favorite = None  # None=all, 1=favorites only
             real_feed_id = feed_id
-            if feed_id.startswith("unread:"):
-                filter_read = 0
-                real_feed_id = feed_id[7:]
-            elif feed_id.startswith("read:"):
-                filter_read = 1
-                real_feed_id = feed_id[5:]
 
-            sql_parts = ["SELECT id, feed_id, title, url, content, date, author, is_read, media_url, media_type FROM articles"]
+            if real_feed_id.startswith("favorites:"):
+                filter_favorite = 1
+                real_feed_id = real_feed_id[10:]
+            elif real_feed_id.startswith("fav:"):
+                filter_favorite = 1
+                real_feed_id = real_feed_id[4:]
+
+            if real_feed_id.startswith("unread:"):
+                filter_read = 0
+                real_feed_id = real_feed_id[7:]
+            elif real_feed_id.startswith("read:"):
+                filter_read = 1
+                real_feed_id = real_feed_id[5:]
+
+            sql_parts = ["SELECT id, feed_id, title, url, content, date, author, is_read, is_favorite, media_url, media_type FROM articles"]
             where_clauses = []
             params = []
             
@@ -599,7 +608,7 @@ class LocalProvider(RSSProvider):
             if is_category:
                 cat_name = real_feed_id.split(":", 1)[1]
                 sql_parts = ["""
-                    SELECT a.id, a.feed_id, a.title, a.url, a.content, a.date, a.author, a.is_read, a.media_url, a.media_type
+                    SELECT a.id, a.feed_id, a.title, a.url, a.content, a.date, a.author, a.is_read, a.is_favorite, a.media_url, a.media_type
                     FROM articles a
                     JOIN feeds f ON a.feed_id = f.id
                 """]
@@ -614,6 +623,11 @@ class LocalProvider(RSSProvider):
                 col = "a.is_read" if is_category else "is_read"
                 where_clauses.append(f"{col} = ?")
                 params.append(filter_read)
+
+            if filter_favorite is not None:
+                col = "a.is_favorite" if is_category else "is_favorite"
+                where_clauses.append(f"{col} = ?")
+                params.append(filter_favorite)
 
             if where_clauses:
                 sql_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -649,7 +663,7 @@ class LocalProvider(RSSProvider):
                 
                 articles.append(Article(
                     id=row[0], feed_id=row[1], title=row[2], url=row[3], content=row[4], date=row[5], author=row[6], is_read=bool(row[7]),
-                    media_url=row[8], media_type=row[9], chapters=chs
+                    is_favorite=bool(row[8]), media_url=row[9], media_type=row[10], chapters=chs
                 ))
             return articles
         finally:
@@ -665,15 +679,24 @@ class LocalProvider(RSSProvider):
         try:
             c = conn.cursor()
 
-            # Determine read/unread filter
-            filter_read = None # None=all, 0=unread, 1=read
+            # Determine filters
+            filter_read = None  # None=all, 0=unread, 1=read
+            filter_favorite = None  # None=all, 1=favorites only
             real_feed_id = feed_id
-            if feed_id.startswith("unread:"):
+
+            if real_feed_id.startswith("favorites:"):
+                filter_favorite = 1
+                real_feed_id = real_feed_id[10:]
+            elif real_feed_id.startswith("fav:"):
+                filter_favorite = 1
+                real_feed_id = real_feed_id[4:]
+
+            if real_feed_id.startswith("unread:"):
                 filter_read = 0
-                real_feed_id = feed_id[7:]
-            elif feed_id.startswith("read:"):
+                real_feed_id = real_feed_id[7:]
+            elif real_feed_id.startswith("read:"):
                 filter_read = 1
-                real_feed_id = feed_id[5:]
+                real_feed_id = real_feed_id[5:]
 
             # 1. Calculate Total
             count_sql_parts = []
@@ -702,6 +725,11 @@ class LocalProvider(RSSProvider):
                 col = "a.is_read" if is_category else "is_read"
                 count_where.append(f"{col} = ?")
                 count_params.append(filter_read)
+
+            if filter_favorite is not None:
+                col = "a.is_favorite" if is_category else "is_favorite"
+                count_where.append(f"{col} = ?")
+                count_params.append(filter_favorite)
             
             if count_where:
                 count_sql_parts.append("WHERE " + " AND ".join(count_where))
@@ -710,14 +738,14 @@ class LocalProvider(RSSProvider):
             total = int(c.fetchone()[0] or 0)
 
             # 2. Fetch Page
-            sql_parts = ["SELECT id, feed_id, title, url, content, date, author, is_read, media_url, media_type FROM articles"]
+            sql_parts = ["SELECT id, feed_id, title, url, content, date, author, is_read, is_favorite, media_url, media_type FROM articles"]
             where_clauses = []
             params = []
             
             if is_category:
                 cat_name = real_feed_id.split(":", 1)[1]
                 sql_parts = ["""
-                    SELECT a.id, a.feed_id, a.title, a.url, a.content, a.date, a.author, a.is_read, a.media_url, a.media_type
+                    SELECT a.id, a.feed_id, a.title, a.url, a.content, a.date, a.author, a.is_read, a.is_favorite, a.media_url, a.media_type
                     FROM articles a
                     JOIN feeds f ON a.feed_id = f.id
                 """]
@@ -731,6 +759,11 @@ class LocalProvider(RSSProvider):
                 col = "a.is_read" if is_category else "is_read"
                 where_clauses.append(f"{col} = ?")
                 params.append(filter_read)
+
+            if filter_favorite is not None:
+                col = "a.is_favorite" if is_category else "is_favorite"
+                where_clauses.append(f"{col} = ?")
+                params.append(filter_favorite)
             
             if where_clauses:
                 sql_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -774,8 +807,9 @@ class LocalProvider(RSSProvider):
                     date=r[5],
                     author=r[6],
                     is_read=bool(r[7]),
-                    media_url=r[8],
-                    media_type=r[9],
+                    is_favorite=bool(r[8]),
+                    media_url=r[9],
+                    media_type=r[10],
                     chapters=chapters
                 ))
             return articles, total
@@ -787,6 +821,37 @@ class LocalProvider(RSSProvider):
         try:
             c = conn.cursor()
             c.execute("UPDATE articles SET is_read = 1 WHERE id = ?", (article_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def supports_favorites(self) -> bool:
+        return True
+
+    def toggle_favorite(self, article_id: str):
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT is_favorite FROM articles WHERE id = ?", (article_id,))
+            row = c.fetchone()
+            if not row:
+                return None
+            new_val = 0 if int(row[0] or 0) else 1
+            c.execute("UPDATE articles SET is_favorite = ? WHERE id = ?", (new_val, article_id))
+            conn.commit()
+            return bool(new_val)
+        finally:
+            conn.close()
+
+    def set_favorite(self, article_id: str, is_favorite: bool) -> bool:
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT 1 FROM articles WHERE id = ?", (article_id,))
+            if not c.fetchone():
+                return False
+            c.execute("UPDATE articles SET is_favorite = ? WHERE id = ?", (1 if is_favorite else 0, article_id))
             conn.commit()
             return True
         finally:
