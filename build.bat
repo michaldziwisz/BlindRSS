@@ -222,16 +222,12 @@ rem This is only for MODE=build; release builds must always be clean.
 set "PRESERVE_DIR="
 if /I "%MODE%"=="build" (
     set "DIST_APP_DIR=%SCRIPT_DIR%dist\\BlindRSS"
-    if exist "!DIST_APP_DIR!\\rss.db" (
-        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
-        mkdir "!PRESERVE_DIR!" >nul 2>nul
-        echo [BlindRSS Build] Preserving dist user data...
-        for %%F in (rss.db rss.db-wal rss.db-shm) do (
-            if exist "!DIST_APP_DIR!\\%%F" copy /Y "!DIST_APP_DIR!\\%%F" "!PRESERVE_DIR!\\%%F" >nul 2>nul
-        )
-        if exist "!DIST_APP_DIR!\\podcasts" xcopy /E /I /Y "!DIST_APP_DIR!\\podcasts" "!PRESERVE_DIR!\\podcasts" >nul 2>nul
-    )
-)
+	    if exist "!DIST_APP_DIR!\\rss.db" (
+	        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
+	        echo [BlindRSS Build] Preserving dist user data...
+	        call :copy_user_data "!DIST_APP_DIR!" "!PRESERVE_DIR!"
+	    )
+	)
 
 echo [BlindRSS Build] Cleaning previous build...
 if exist "%SCRIPT_DIR%build" rd /s /q "%SCRIPT_DIR%build"
@@ -283,17 +279,23 @@ exit /b 0
 if not defined PRESERVE_DIR exit /b 0
 if not exist "!PRESERVE_DIR!\\rss.db" goto :restore_preserved_dist_data_cleanup
 
-echo [BlindRSS Build] Restoring preserved dist user data...
-if not exist "%SCRIPT_DIR%dist\\BlindRSS" mkdir "%SCRIPT_DIR%dist\\BlindRSS" >nul 2>nul
-for %%F in (rss.db rss.db-wal rss.db-shm) do (
-    if exist "!PRESERVE_DIR!\\%%F" copy /Y "!PRESERVE_DIR!\\%%F" "%SCRIPT_DIR%dist\\BlindRSS\\%%F" >nul 2>nul
-)
-if exist "!PRESERVE_DIR!\\podcasts" xcopy /E /I /Y "!PRESERVE_DIR!\\podcasts" "%SCRIPT_DIR%dist\\BlindRSS\\podcasts" >nul 2>nul
+	echo [BlindRSS Build] Restoring preserved dist user data...
+	call :copy_user_data "!PRESERVE_DIR!" "%SCRIPT_DIR%dist\\BlindRSS"
 
 :restore_preserved_dist_data_cleanup
-rd /s /q "!PRESERVE_DIR!" >nul 2>nul
-set "PRESERVE_DIR="
-exit /b 0
+	rd /s /q "!PRESERVE_DIR!" >nul 2>nul
+	set "PRESERVE_DIR="
+	exit /b 0
+
+:copy_user_data
+	set "SRC=%~1"
+	set "DEST=%~2"
+	if not exist "!DEST!" mkdir "!DEST!" >nul 2>nul
+	for %%F in (rss.db rss.db-wal rss.db-shm) do (
+	    if exist "!SRC!\\%%F" copy /Y "!SRC!\\%%F" "!DEST!\\%%F" >nul 2>nul
+	)
+	if exist "!SRC!\\podcasts" xcopy /E /I /Y "!SRC!\\podcasts" "!DEST!\\podcasts" >nul 2>nul
+	exit /b 0
 
 :sign_exe
 if /I "%MODE%"=="build" (

@@ -29,7 +29,7 @@ def _is_locked_error(error: Exception) -> bool:
     if code is not None:
         try:
             return int(code) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
     # Fallback for older Python versions / unknown errors.
