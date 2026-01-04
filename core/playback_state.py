@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from core.db import get_connection
+
+LOG = logging.getLogger(__name__)
+
+_PLAYBACK_STATE_BUSY_TIMEOUT_MS = 500
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,10 @@ def get_playback_state(playback_id: str) -> Optional[PlaybackState]:
 
     conn = get_connection()
     try:
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
+        except Exception:
+            pass
         c = conn.cursor()
         c.execute(
             "SELECT id, position_ms, duration_ms, updated_at, completed, seek_supported, title "
@@ -82,31 +92,43 @@ def upsert_playback_state(
 
     conn = get_connection()
     try:
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
+        except Exception:
+            pass
         c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO playback_state (id, position_ms, duration_ms, updated_at, completed, seek_supported, title)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                position_ms = excluded.position_ms,
-                duration_ms = CASE
-                    WHEN excluded.duration_ms IS NOT NULL THEN excluded.duration_ms
-                    ELSE playback_state.duration_ms
-                END,
-                updated_at = excluded.updated_at,
-                completed = excluded.completed,
-                seek_supported = CASE
-                    WHEN excluded.seek_supported IS NOT NULL THEN excluded.seek_supported
-                    ELSE playback_state.seek_supported
-                END,
-                title = CASE
-                    WHEN excluded.title IS NOT NULL THEN excluded.title
-                    ELSE playback_state.title
-                END
-            """,
-            (playback_id, pos, dur, ts, completed_i, seek_i, title),
-        )
-        conn.commit()
+        try:
+            c.execute(
+                """
+                INSERT INTO playback_state (id, position_ms, duration_ms, updated_at, completed, seek_supported, title)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    position_ms = excluded.position_ms,
+                    duration_ms = CASE
+                        WHEN excluded.duration_ms IS NOT NULL THEN excluded.duration_ms
+                        ELSE playback_state.duration_ms
+                    END,
+                    updated_at = excluded.updated_at,
+                    completed = excluded.completed,
+                    seek_supported = CASE
+                        WHEN excluded.seek_supported IS NOT NULL THEN excluded.seek_supported
+                        ELSE playback_state.seek_supported
+                    END,
+                    title = CASE
+                        WHEN excluded.title IS NOT NULL THEN excluded.title
+                        ELSE playback_state.title
+                    END
+                """,
+                (playback_id, pos, dur, ts, completed_i, seek_i, title),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # Don't block the GUI thread for long if a refresh is writing.
+            # We'll retry on the next timer tick.
+            if "locked" in str(e).lower():
+                LOG.debug("playback_state is locked; skipping position write")
+                return
+            raise
     finally:
         conn.close()
 
@@ -117,9 +139,19 @@ def delete_playback_state(playback_id: str) -> None:
 
     conn = get_connection()
     try:
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
+        except Exception:
+            pass
         c = conn.cursor()
-        c.execute("DELETE FROM playback_state WHERE id = ?", (playback_id,))
-        conn.commit()
+        try:
+            c.execute("DELETE FROM playback_state WHERE id = ?", (playback_id,))
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                LOG.debug("playback_state is locked; skipping delete")
+                return
+            raise
     finally:
         conn.close()
 
@@ -130,11 +162,21 @@ def set_seek_supported(playback_id: str, seek_supported: bool) -> None:
 
     conn = get_connection()
     try:
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
+        except Exception:
+            pass
         c = conn.cursor()
-        c.execute(
-            "UPDATE playback_state SET seek_supported = ?, updated_at = ? WHERE id = ?",
-            (1 if bool(seek_supported) else 0, int(time.time()), playback_id),
-        )
-        conn.commit()
+        try:
+            c.execute(
+                "UPDATE playback_state SET seek_supported = ?, updated_at = ? WHERE id = ?",
+                (1 if bool(seek_supported) else 0, int(time.time()), playback_id),
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower():
+                LOG.debug("playback_state is locked; skipping seek_supported update")
+                return
+            raise
     finally:
         conn.close()
