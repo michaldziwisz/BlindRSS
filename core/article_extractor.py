@@ -133,11 +133,12 @@ def _extract_meta_content(soup: BeautifulSoup, candidates: List[dict]) -> str:
     return ""
 
 
-def _extract_meta_description(html: str) -> str:
-    if not html:
+def _extract_meta_description(html: str, *, soup: Optional[BeautifulSoup] = None) -> str:
+    if soup is None and not html:
         return ""
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        if soup is None:
+            soup = BeautifulSoup(html, "html.parser")
         return _extract_meta_content(
             soup,
             [
@@ -151,11 +152,12 @@ def _extract_meta_description(html: str) -> str:
     return ""
 
 
-def _extract_page_title(html: str) -> str:
-    if not html:
+def _extract_page_title(html: str, *, soup: Optional[BeautifulSoup] = None) -> str:
+    if soup is None and not html:
         return ""
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        if soup is None:
+            soup = BeautifulSoup(html, "html.parser")
         meta_title = _extract_meta_content(
             soup,
             [
@@ -218,7 +220,13 @@ def _attempt_lead_recovery(
     if not _lead_recovery_enabled(url):
         return None
 
-    desc = _strip_trailing_ellipsis(_extract_meta_description(html))
+    soup = None
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        LOG.debug("Failed to parse HTML for lead recovery", exc_info=True)
+
+    desc = _strip_trailing_ellipsis(_extract_meta_description(html, soup=soup))
     desc_norm = _normalize_for_match(desc)
     if not desc_norm or len(desc_norm) < _LEAD_RECOVERY_MIN_DESC_LEN:
         return None
@@ -236,7 +244,7 @@ def _attempt_lead_recovery(
     if desc_snippet not in rec_norm:
         return None
 
-    page_title = _strip_title_suffix(_extract_page_title(html))
+    page_title = _strip_title_suffix(_extract_page_title(html, soup=soup))
     page_title_norm = _normalize_for_match(page_title)
 
     intro = _recover_intro_paragraphs(
