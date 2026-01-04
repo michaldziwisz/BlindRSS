@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 rem Always log updater output so failures aren't silent when running hidden.
-for /f %%T in ('powershell -NoProfile -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set "RUNSTAMP=%%T"
+for /f %%T in ('powershell -NoProfile -InputFormat None -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set "RUNSTAMP=%%T"
 set "LOG_FILE=%TEMP%\BlindRSS_update_!RUNSTAMP!_!RANDOM!.log"
 call :main %* >> "%LOG_FILE%" 2>&1
 exit /b %ERRORLEVEL%
@@ -23,10 +23,10 @@ if "%EXE_NAME%"=="" goto :usage
 rem Ensure we are not running from within the install directory
 if not defined BLINDRSS_UPDATE_HELPER_RELOCATED (
     set "SCRIPT_PATH=%~f0"
-    powershell -NoProfile -Command "$sp=[string]$env:SCRIPT_PATH; $inst=[string]$env:INSTALL_DIR; if ($sp -and $inst -and $sp.ToLower().StartsWith($inst.ToLower())) { exit 0 } else { exit 1 }" >nul 2>nul
+    powershell -NoProfile -InputFormat None -Command "$sp=[string]$env:SCRIPT_PATH; $inst=[string]$env:INSTALL_DIR; if ($sp -and $inst -and $sp.ToLower().StartsWith($inst.ToLower())) { exit 0 } else { exit 1 }" >nul 2>nul
     if not errorlevel 1 (
         set "BLINDRSS_UPDATE_HELPER_RELOCATED=1"
-        for /f %%T in ('powershell -NoProfile -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set "HSTAMP=%%T"
+        for /f %%T in ('powershell -NoProfile -InputFormat None -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set "HSTAMP=%%T"
         set "TMP_HELPER=%TEMP%\BlindRSS_update_helper_!HSTAMP!_!RANDOM!.bat"
         copy /Y "%~f0" "!TMP_HELPER!" >nul 2>nul
         start "" "!TMP_HELPER!" "%PID%" "%INSTALL_DIR%" "%STAGING_DIR%" "%EXE_NAME%"
@@ -47,13 +47,13 @@ if not exist "%STAGING_DIR%" (
 )
 
 echo [BlindRSS Update] Waiting for process %PID% to exit...
-powershell -NoProfile -Command "Wait-Process -Id %PID% -ErrorAction SilentlyContinue"
+powershell -NoProfile -InputFormat None -Command "Wait-Process -Id %PID% -ErrorAction SilentlyContinue"
 
 rem OneDrive Fix: Don't move the root folder. Move CONTENTS.
 rem We back up the current contents to a backup folder, then move new contents in.
 rem Robocopy is more robust for this than 'move'.
 
-for /f %%T in ('powershell -NoProfile -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set STAMP=%%T
+for /f %%T in ('powershell -NoProfile -InputFormat None -Command "(Get-Date).ToString(\"yyyyMMddHHmmss\")"') do set STAMP=%%T
 set "BACKUP_DIR=%INSTALL_DIR%_backup_%STAMP%"
 
 echo [BlindRSS Update] Backing up current install to "%BACKUP_DIR%"...
@@ -102,7 +102,7 @@ if exist "%BACKUP_DIR%" (
     robocopy "%BACKUP_DIR%" "%INSTALL_DIR%" /E /MOVE /R:3 /W:1 /NFL /NDL
 )
 start "" "%INSTALL_DIR%\%EXE_NAME%"
-powershell -NoProfile -Command "param([string]$log) try { Add-Type -AssemblyName PresentationFramework | Out-Null; $msg = 'BlindRSS update failed.' + \"`n`n\" + 'Log file:' + \"`n\" + $log; [System.Windows.MessageBox]::Show($msg, 'BlindRSS Update', 'OK', 'Error') | Out-Null } catch { }" "%LOG_FILE%" >nul 2>nul
+powershell -NoProfile -InputFormat None -Command "param([string]$log) try { Add-Type -AssemblyName PresentationFramework | Out-Null; $msg = 'BlindRSS update failed.' + \"`n`n\" + 'Log file:' + \"`n\" + $log; [System.Windows.MessageBox]::Show($msg, 'BlindRSS Update', 'OK', 'Error') | Out-Null } catch { }" "%LOG_FILE%" >nul 2>nul
 exit /b 1
 
 :restore_user_data
