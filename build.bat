@@ -217,13 +217,19 @@ if not exist "%SCRIPT_DIR%config.json" (
     echo { "active_provider": "local" } > "%SCRIPT_DIR%config.json"
 )
 
-rem Preserve local test data (e.g. rss.db) between iterative builds.
-rem This is only for MODE=build; release builds must always be clean.
-set "PRESERVE_DIR="
-if /I "%MODE%"=="build" (
-    set "DIST_APP_DIR=%SCRIPT_DIR%dist\\BlindRSS"
+	rem Preserve local test data (e.g. rss.db) between iterative builds.
+	rem This is only for MODE=build; release builds must always be clean.
+	set "PRESERVE_DIR="
+	if /I "%MODE%"=="build" (
+	    set "DIST_APP_DIR=%SCRIPT_DIR%dist\\BlindRSS"
 	    if exist "!DIST_APP_DIR!\\rss.db" (
 	        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
+	    ) else if exist "!DIST_APP_DIR!\\config.json" (
+	        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
+	    ) else if exist "!DIST_APP_DIR!\\podcasts" (
+	        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
+	    )
+	    if defined PRESERVE_DIR (
 	        echo [BlindRSS Build] Preserving dist user data...
 	        call :copy_user_data "!DIST_APP_DIR!" "!PRESERVE_DIR!"
 	    )
@@ -276,8 +282,12 @@ if exist "%SCRIPT_DIR%dist\BlindRSS.exe" copy /Y "%SCRIPT_DIR%dist\BlindRSS.exe"
 exit /b 0
 
 :restore_preserved_dist_data
-if not defined PRESERVE_DIR exit /b 0
-if not exist "!PRESERVE_DIR!\\rss.db" goto :restore_preserved_dist_data_cleanup
+	if not defined PRESERVE_DIR exit /b 0
+	if not exist "!PRESERVE_DIR!\\rss.db" (
+	    if not exist "!PRESERVE_DIR!\\config.json" (
+	        if not exist "!PRESERVE_DIR!\\podcasts" goto :restore_preserved_dist_data_cleanup
+	    )
+	)
 
 	echo [BlindRSS Build] Restoring preserved dist user data...
 	call :copy_user_data "!PRESERVE_DIR!" "%SCRIPT_DIR%dist\\BlindRSS"
@@ -291,9 +301,11 @@ if not exist "!PRESERVE_DIR!\\rss.db" goto :restore_preserved_dist_data_cleanup
 	set "SRC=%~1"
 	set "DEST=%~2"
 	if not exist "!DEST!" mkdir "!DEST!" >nul 2>nul
+	if exist "!SRC!\\config.json" copy /Y "!SRC!\\config.json" "!DEST!\\config.json" >nul 2>nul
 	for %%F in (rss.db rss.db-wal rss.db-shm) do (
 	    if exist "!SRC!\\%%F" copy /Y "!SRC!\\%%F" "!DEST!\\%%F" >nul 2>nul
 	)
+	if exist "!SRC!\\rss.db-journal" copy /Y "!SRC!\\rss.db-journal" "!DEST!\\rss.db-journal" >nul 2>nul
 	if exist "!SRC!\\podcasts" xcopy /E /I /Y "!SRC!\\podcasts" "!DEST!\\podcasts" >nul 2>nul
 	exit /b 0
 
