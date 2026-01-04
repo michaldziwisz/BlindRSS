@@ -53,13 +53,23 @@ _LEAD_RECOVERY_ALLOWED_NETLOC_SUFFIXES = {
     "wirtualnemedia.pl",
 }
 
+_LEAD_RECOVERY_MIN_PRECISION_LEN = 200
+_LEAD_RECOVERY_MIN_DESC_LEN = 60
+_LEAD_RECOVERY_DESC_SNIPPET_LEN = 120
+_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN = 80
+_LEAD_RECOVERY_MAX_SCAN_PARAS = 8
+_LEAD_RECOVERY_MIN_PARA_LEN = 40
+_LEAD_RECOVERY_MAX_PARA_LEN = 800
+_LEAD_RECOVERY_MIN_PUNCT_PARA_LEN = 120
+_LEAD_RECOVERY_MAX_INTRO_PARAS = 2
+
 
 def _lead_recovery_enabled(url: str) -> bool:
     if not url:
         return False
     try:
         host = (urlsplit(url).netloc or "").lower()
-    except Exception:
+    except (TypeError, ValueError):
         return False
     if not host:
         return False
@@ -125,7 +135,7 @@ def _extract_meta_description(html: str) -> str:
                 if content:
                     return content
     except Exception:
-        return ""
+        pass
     return ""
 
 
@@ -148,8 +158,41 @@ def _extract_page_title(html: str) -> str:
         if t and t.get_text(strip=True):
             return t.get_text(strip=True)
     except Exception:
-        return ""
+        pass
     return ""
+
+
+def _recover_intro_paragraphs(
+    recall_text: str,
+    *,
+    precision_norm: str,
+    page_title_norm: str,
+    desc_hit_snippet: str,
+) -> List[str]:
+    intro: List[str] = []
+    desc_hit = False
+
+    for p in _split_paragraphs(recall_text)[:_LEAD_RECOVERY_MAX_SCAN_PARAS]:
+        pn = _normalize_for_match(p)
+        if not pn:
+            continue
+        if pn in precision_norm:
+            break
+        if page_title_norm and pn == page_title_norm:
+            continue
+        if len(p) < _LEAD_RECOVERY_MIN_PARA_LEN or len(p) > _LEAD_RECOVERY_MAX_PARA_LEN:
+            continue
+        if not re.search(r"[.!?]", p) and len(p) < _LEAD_RECOVERY_MIN_PUNCT_PARA_LEN:
+            continue
+        if desc_hit_snippet and desc_hit_snippet in pn:
+            desc_hit = True
+        intro.append(p)
+        if len(intro) >= _LEAD_RECOVERY_MAX_INTRO_PARAS:
+            break
+
+    if not intro or not desc_hit:
+        return []
+    return intro
 
 
 _ZDNET_BOILERPLATE_PATTERNS: List[re.Pattern] = [
@@ -316,7 +359,7 @@ def _trafilatura_extract_text(html: str, url: str = "") -> str:
     txt_prec = _do_extract({"favor_precision": True, "favor_recall": False})
     prec = (txt_prec or "").strip()
     if prec:
-        if len(prec) >= 200:
+        if len(prec) >= _LEAD_RECOVERY_MIN_PRECISION_LEN:
             if not _lead_recovery_enabled(url):
                 return prec
             # If the page has a meaningful meta description that is not present in the precision
@@ -327,8 +370,8 @@ def _trafilatura_extract_text(html: str, url: str = "") -> str:
 
             should_try_recall = False
             desc_snippet = ""
-            if desc_norm and len(desc_norm) >= 60:
-                desc_snippet = desc_norm[:120]
+            if desc_norm and len(desc_norm) >= _LEAD_RECOVERY_MIN_DESC_LEN:
+                desc_snippet = desc_norm[:_LEAD_RECOVERY_DESC_SNIPPET_LEN]
                 if desc_snippet and desc_snippet not in prec_norm:
                     should_try_recall = True
 
@@ -341,28 +384,13 @@ def _trafilatura_extract_text(html: str, url: str = "") -> str:
                     if desc_snippet and desc_snippet in rec_norm:
                         page_title = _strip_title_suffix(_extract_page_title(html))
                         page_title_norm = _normalize_for_match(page_title)
-
-                        intro: List[str] = []
-                        desc_hit = False
-                        for p in _split_paragraphs(rec)[:8]:
-                            pn = _normalize_for_match(p)
-                            if not pn:
-                                continue
-                            if pn in prec_norm:
-                                break
-                            if page_title_norm and pn == page_title_norm:
-                                continue
-                            if len(p) < 40 or len(p) > 800:
-                                continue
-                            if not re.search(r"[.!?]", p) and len(p) < 120:
-                                continue
-                            if desc_snippet[:80] and desc_snippet[:80] in pn:
-                                desc_hit = True
-                            intro.append(p)
-                            if len(intro) >= 2:
-                                break
-
-                        if intro and desc_hit:
+                        intro = _recover_intro_paragraphs(
+                            rec,
+                            precision_norm=prec_norm,
+                            page_title_norm=page_title_norm,
+                            desc_hit_snippet=desc_snippet[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN],
+                        )
+                        if intro:
                             combined = "\n\n".join(intro + [prec])
                             return (combined or "").strip()
 
