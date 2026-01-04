@@ -202,6 +202,8 @@ class PlayerFrame(wx.Frame):
         self._resume_restore_inflight = False
         self._resume_restore_id = None
         self._resume_restore_target_ms = None
+        self._resume_restore_attempts = 0
+        self._resume_restore_last_attempt_ts = 0.0
 
         # Seek coalescing / debounce
         self._seek_target_ms = None
@@ -426,6 +428,8 @@ class PlayerFrame(wx.Frame):
             self._resume_restore_inflight = True
             self._resume_restore_id = str(resume_id)
             self._resume_restore_target_ms = int(target_ms)
+            self._resume_restore_attempts = 0
+            self._resume_restore_last_attempt_ts = 0.0
             # Avoid writing a 0-position back to the DB while the resume seek is still pending.
             self._resume_last_save_ts = float(time.monotonic())
         except Exception:
@@ -1447,7 +1451,7 @@ class PlayerFrame(wx.Frame):
             mins = int(start // 60)
             secs = int(start % 60)
             title = ch.get("title", f"Chapter {start}")
-            self.chapter_choice.Append(f"{mins:02d}:{secs:02d} - {title}", ch)
+            self.chapter_choice.Append(f"{title} - {mins:02d}:{secs:02d}", ch)
 
     def on_play_pause(self, event):
         self.toggle_play_pause()
@@ -1523,9 +1527,9 @@ class PlayerFrame(wx.Frame):
                 tgt = int(recent_seek_target)
                 # If VLC has actually jumped to the target (or close), we can sync early.
                 if abs(int(vlc_cur) - int(tgt)) <= 2000:
-                     ui_cur = int(vlc_cur)
+                    ui_cur = int(vlc_cur)
                 else:
-                     ui_cur = int(tgt)
+                    ui_cur = int(tgt)
             except Exception:
                 ui_cur = int(vlc_cur)
         else:
@@ -1550,74 +1554,144 @@ class PlayerFrame(wx.Frame):
                 if getattr(self, 'duration', 0) and int(self.duration) > 0 and target_ms > int(self.duration):
                     target_ms = int(self.duration)
 
-                if not playing_now:
-                    try:
-                        self.player.play()
-                    except Exception:
-                        pass
-                    try:
-                        playing_now = bool(self.player.is_playing())
-                    except Exception:
-                        playing_now = False
-
-                if abs(int(cur) - int(target_ms)) > 1500:
-                    try:
-                        self.player.set_time(int(target_ms))
-                        try:
-                            ts = time.monotonic()
-                            self._seek_target_ms = int(target_ms)
-                            self._seek_target_ts = float(ts)
-                            self._pos_ms = int(target_ms)
-                            self._pos_ts = float(ts)
-                            self._last_vlc_time_ms = int(target_ms)
-                        except Exception:
-                            pass
-                        try:
-                            self._start_seek_guard(int(target_ms))
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-                else:
-                    self._pending_resume_seek_ms = None
-                    if restore_inflight and restore_id:
-                        try:
-                            playback_state.set_seek_supported(str(restore_id), True)
-                        except Exception:
-                            log.exception("Failed to update seek_supported=True for playback_state")
+                if restore_inflight:
+                    # Restore from persisted position: request a single seek once VLC is ready, then wait.
+                    if abs(int(cur) - int(target_ms)) <= 1500:
+                        self._pending_resume_seek_ms = None
+                        if restore_id:
+                            try:
+                                playback_state.set_seek_supported(str(restore_id), True)
+                            except Exception:
+                                log.exception("Failed to update seek_supported=True for playback_state")
                         try:
                             self._resume_restore_inflight = False
                         except Exception:
                             pass
-                    if bool(getattr(self, '_pending_resume_paused', False)):
+                    else:
+                        state_i = None
                         try:
-                            self.player.set_pause(1)
+                            state_i = int(self.player.get_state())
                         except Exception:
+                            state_i = None
+
+                        # If VLC reports the stream is not seekable, stop trying and remember it.
+                        try:
                             try:
-                                self.player.pause()
+                                already_tried = int(getattr(self, "_resume_restore_attempts", 0) or 0)
+                            except Exception:
+                                already_tried = 0
+                            if (
+                                state_i is not None
+                                and state_i not in (1, 2)
+                                and already_tried > 0
+                                and restore_id
+                                and hasattr(self.player, "is_seekable")
+                                and (self.player.is_seekable() is False)
+                            ):
+                                playback_state.set_seek_supported(str(restore_id), False)
+                                self._pending_resume_seek_ms = None
+                                self._resume_restore_inflight = False
+                                restore_inflight = False
+                        except Exception:
+                            pass
+
+                        if restore_inflight:
+                            # Don't spam play() while VLC is Opening/Buffering; load already starts playback.
+                            if state_i in (1, 2):
+                                pass
+                            else:
+                                now_seek = time.monotonic()
+                                try:
+                                    last_attempt = float(getattr(self, "_resume_restore_last_attempt_ts", 0.0) or 0.0)
+                                except Exception:
+                                    last_attempt = 0.0
+                                if (now_seek - last_attempt) >= 0.9:
+                                    try:
+                                        attempts = int(getattr(self, "_resume_restore_attempts", 0) or 0)
+                                    except Exception:
+                                        attempts = 0
+                                    if attempts < 1:
+                                        try:
+                                            self.player.set_time(int(target_ms))
+                                            try:
+                                                ts = time.monotonic()
+                                                self._seek_target_ms = int(target_ms)
+                                                self._seek_target_ts = float(ts)
+                                                self._pos_ms = int(target_ms)
+                                                self._pos_ts = float(ts)
+                                                self._last_vlc_time_ms = int(target_ms)
+                                            except Exception:
+                                                pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            self._resume_restore_attempts = int(attempts) + 1
+                                            self._resume_restore_last_attempt_ts = float(now_seek)
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # After we requested a seek once, avoid re-seeking (it can cause audio loops).
+                                        # If VLC does not land close enough within a few seconds, give up for this
+                                        # session without marking the source as unseekable.
+                                        try:
+                                            if (now_seek - float(last_attempt)) >= 8.0:
+                                                self._pending_resume_seek_ms = None
+                                                self._resume_restore_inflight = False
+                                        except Exception:
+                                            pass
+
+                else:
+                    # Legacy/in-flight resume path (cast handoff): keep it more aggressive.
+                    if not playing_now:
+                        try:
+                            self.player.play()
+                        except Exception:
+                            pass
+                        try:
+                            playing_now = bool(self.player.is_playing())
+                        except Exception:
+                            playing_now = False
+
+                    if abs(int(cur) - int(target_ms)) > 1500:
+                        try:
+                            self.player.set_time(int(target_ms))
+                            try:
+                                ts = time.monotonic()
+                                self._seek_target_ms = int(target_ms)
+                                self._seek_target_ts = float(ts)
+                                self._pos_ms = int(target_ms)
+                                self._pos_ts = float(ts)
+                                self._last_vlc_time_ms = int(target_ms)
                             except Exception:
                                 pass
-                        self.is_playing = False
-
-                try:
-                    self._pending_resume_seek_attempts = int(getattr(self, '_pending_resume_seek_attempts', 0) or 0) + 1
-                except Exception:
-                    self._pending_resume_seek_attempts = 1
-                if (
-                    self._pending_resume_seek_ms is not None
-                    and int(getattr(self, '_pending_resume_seek_attempts', 0) or 0)
-                    >= int(getattr(self, '_pending_resume_seek_max_attempts', 25) or 25)
-                ):
-                    self._pending_resume_seek_ms = None
-                    if restore_inflight and restore_id:
-                        try:
-                            playback_state.set_seek_supported(str(restore_id), False)
-                        except Exception:
-                            log.exception("Failed to update seek_supported=False for playback_state")
-                        try:
-                            self._resume_restore_inflight = False
+                            try:
+                                self._start_seek_guard(int(target_ms))
+                            except Exception:
+                                pass
                         except Exception:
                             pass
+                    else:
+                        self._pending_resume_seek_ms = None
+                        if bool(getattr(self, '_pending_resume_paused', False)):
+                            try:
+                                self.player.set_pause(1)
+                            except Exception:
+                                try:
+                                    self.player.pause()
+                                except Exception:
+                                    pass
+                            self.is_playing = False
+
+                    try:
+                        self._pending_resume_seek_attempts = int(getattr(self, '_pending_resume_seek_attempts', 0) or 0) + 1
+                    except Exception:
+                        self._pending_resume_seek_attempts = 1
+                    if (
+                        self._pending_resume_seek_ms is not None
+                        and int(getattr(self, '_pending_resume_seek_attempts', 0) or 0)
+                        >= int(getattr(self, '_pending_resume_seek_max_attempts', 25) or 25)
+                    ):
+                        self._pending_resume_seek_ms = None
             except Exception:
                 pass
 
@@ -1653,7 +1727,11 @@ class PlayerFrame(wx.Frame):
                     else:
                         break
                 if idx != -1:
-                    self.chapter_choice.SetSelection(int(idx))
+                    try:
+                        if not self._is_focus_in_chapter_choice():
+                            self.chapter_choice.SetSelection(int(idx))
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1768,14 +1846,68 @@ class PlayerFrame(wx.Frame):
         self.config_manager.set("playback_speed", speed)
 
     def on_chapter_select(self, event):
-        idx = self.chapter_choice.GetSelection()
-        if idx != wx.NOT_FOUND:
-            data = self.chapter_choice.GetClientData(idx)
-            start_sec = data.get("start", 0)
-            if self.is_casting:
-                pass 
-            else:
-                self._apply_seek_time_ms(int(start_sec * 1000), force=True)
+        # Do not seek on selection change (arrow-key browsing should be safe).
+        # Seeking is committed explicitly via Enter (see on_char_hook).
+        try:
+            self._chapter_pending_idx = int(self.chapter_choice.GetSelection())
+        except Exception:
+            self._chapter_pending_idx = None
+
+    def _is_focus_in_chapter_choice(self) -> bool:
+        try:
+            chapter_choice = getattr(self, "chapter_choice", None)
+            if chapter_choice is None:
+                return False
+        except Exception:
+            return False
+
+        focus = None
+        try:
+            focus = wx.Window.FindFocus()
+        except Exception:
+            focus = None
+
+        try:
+            while focus is not None:
+                if focus == chapter_choice:
+                    return True
+                focus = focus.GetParent()
+        except Exception:
+            return False
+
+        return False
+
+    def _commit_chapter_selection(self) -> None:
+        try:
+            idx = int(self.chapter_choice.GetSelection())
+        except Exception:
+            idx = wx.NOT_FOUND
+
+        if idx == wx.NOT_FOUND:
+            return
+
+        data = {}
+        try:
+            data = self.chapter_choice.GetClientData(int(idx)) or {}
+        except Exception:
+            data = {}
+
+        try:
+            start_sec = float(data.get("start", 0) or 0)
+        except Exception:
+            start_sec = 0.0
+
+        if start_sec < 0:
+            start_sec = 0.0
+
+        if self.is_casting:
+            # TODO: map chapters to casting seek when supported.
+            return
+
+        try:
+            self._apply_seek_time_ms(int(start_sec * 1000.0), force=True)
+        except Exception:
+            pass
 
     def _format_time(self, ms):
         seconds = ms // 1000
@@ -2322,6 +2454,19 @@ class PlayerFrame(wx.Frame):
             pass
 
     def on_char_hook(self, event: wx.KeyEvent) -> None:
+        try:
+            key = int(event.GetKeyCode())
+        except Exception:
+            key = None
+
+        if key in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
+            try:
+                if self._is_focus_in_chapter_choice():
+                    self._commit_chapter_selection()
+                    return
+            except Exception:
+                pass
+
         if event.ControlDown():
             actions = {
                 wx.WXK_UP: lambda: self.adjust_volume(int(getattr(self, "volume_step", 5))),
