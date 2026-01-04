@@ -2,10 +2,33 @@ import os
 import subprocess
 import json
 import platform
+import re
 from functools import lru_cache
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qs
 from core import utils
+
+
+_ARTICLE_DATE_PATH_RE = re.compile(r"/\d{4}/\d{2}/\d{2}/")
+_ARTICLE_PATH_HINTS = (
+    "/news/",
+    "/article",
+    "/story/",
+)
+_MEDIA_PATH_HINTS = (
+    "/video/",
+    "/videos/",
+    "/watch",
+    "/clip",
+    "/player",
+    "/av/",
+    "/reel/",
+    "/embed",
+    "/podcast",
+    "/audio",
+    "/episode",
+    "/track",
+)
 
 
 @lru_cache(maxsize=2048)
@@ -41,6 +64,15 @@ def is_ytdlp_supported(url: str) -> bool:
     if any(kd in domain for kd in known_domains):
         return True
 
+    path_low = (parsed.path or "").lower()
+    # Heuristic: don't treat obvious article/news URLs as playable media just
+    # because yt-dlp has a dedicated extractor for the publisher site.
+    # (e.g., NYTimesArticle, CNN, BBC can match standard articles).
+    looks_like_media = any(hint in path_low for hint in _MEDIA_PATH_HINTS)
+    if not looks_like_media:
+        if _ARTICLE_DATE_PATH_RE.search(path_low) or any(hint in path_low for hint in _ARTICLE_PATH_HINTS):
+            return False
+
     # Use yt-dlp's extractor regexes (offline) and ignore Generic.
     try:
         from yt_dlp.extractor import gen_extractor_classes
@@ -49,7 +81,12 @@ def is_ytdlp_supported(url: str) -> bool:
             try:
                 if not extractor_cls.suitable(url):
                     continue
-                if extractor_cls.ie_key() == "Generic":
+                key = extractor_cls.ie_key()
+                if key == "Generic":
+                    continue
+                # Many publisher sites have dedicated "...Article" extractors,
+                # which are not a good signal that a URL is a playable media page.
+                if str(key).lower().endswith("article"):
                     continue
                 return True
             except Exception:

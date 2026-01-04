@@ -1317,61 +1317,73 @@ class PlayerFrame(wx.Frame):
                 try:
                     import yt_dlp
                     from core.dependency_check import _get_startup_info
-                    # Use browser cookies if possible to avoid bot detection
-                    ydl_opts = {
+
+                    class _YtdlpQuietLogger:
+                        def __init__(self):
+                            self.errors = []
+
+                        def debug(self, msg):
+                            return
+
+                        def warning(self, msg):
+                            return
+
+                        def error(self, msg):
+                            try:
+                                self.errors.append(str(msg))
+                            except Exception:
+                                pass
+
+                    ytdlp_logger = _YtdlpQuietLogger()
+
+                    # Resolve a direct media URL via yt-dlp. We intentionally try
+                    # *without* browser cookies first to avoid Windows cookie/DPAPI
+                    # issues and reduce noisy stderr output.
+                    base_opts = {
                         'format': 'bestaudio/best',
                         'quiet': True,
                         'no_warnings': True,
                         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                         'referer': url,
                         'noprogress': True,
+                        'color': 'never',
+                        'logger': ytdlp_logger,
                     }
                     if platform.system().lower() == "windows":
                         # Hide internal yt-dlp subprocess windows (ffmpeg/ffprobe)
-                        ydl_opts['subprocess_startupinfo'] = _get_startup_info()
-
-                    info = None
-                    last_err = None
-                    tried_cookie_sources = []
+                        base_opts['subprocess_startupinfo'] = _get_startup_info()
 
                     def _extract_with_opts(opts):
                         with yt_dlp.YoutubeDL(opts) as ydl:
                             return ydl.extract_info(url, download=False)
 
-                    def _try_cookie_sources(sources):
-                        nonlocal info, last_err
-                        for source in sources:
+                    info = None
+                    err_no_cookies = None
+                    err_with_cookies = None
+
+                    try:
+                        info = _extract_with_opts(dict(base_opts))
+                    except Exception as e:
+                        err_no_cookies = e
+
+                    if info is None:
+                        tried_cookie_sources = []
+                        for source in (discovery.get_ytdlp_cookie_sources(url) or []):
                             if source in tried_cookie_sources:
                                 continue
                             tried_cookie_sources.append(source)
-                            ydl_opts["cookiesfrombrowser"] = source
+                            opts = dict(base_opts)
+                            opts["cookiesfrombrowser"] = source
                             try:
-                                info = _extract_with_opts(ydl_opts)
+                                info = _extract_with_opts(opts)
                                 _log(f"yt-dlp cookies OK ({source[0]})")
-                                return True
+                                break
                             except Exception as e:
-                                last_err = e
+                                err_with_cookies = e
                                 _log(f"yt-dlp cookies failed ({source[0]}): {e}")
-                        return False
-
-                    cookie_sources = discovery.get_rumble_cookie_sources(url)
-                    if cookie_sources:
-                        _try_cookie_sources(cookie_sources)
 
                     if info is None:
-                        ydl_opts.pop("cookiesfrombrowser", None)
-                        try:
-                            info = _extract_with_opts(ydl_opts)
-                        except Exception as e:
-                            last_err = e
-
-                    if info is None:
-                        fallback_sources = discovery.get_ytdlp_cookie_sources(url)
-                        if fallback_sources:
-                            _try_cookie_sources(fallback_sources)
-
-                    if info is None:
-                        raise last_err if last_err else RuntimeError("yt-dlp extraction failed")
+                        raise err_no_cookies or err_with_cookies or RuntimeError("yt-dlp extraction failed")
 
                     # Handle playlists/multi-video pages
                     if 'entries' in info:
