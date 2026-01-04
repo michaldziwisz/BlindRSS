@@ -227,6 +227,7 @@ def _attempt_lead_recovery(
         soup = BeautifulSoup(html, "html.parser")
     except Exception:
         LOG.debug("Failed to parse HTML for lead recovery", exc_info=True)
+        return None
 
     desc = _strip_trailing_ellipsis(_extract_meta_description(html, soup=soup))
     desc_norm = _normalize_for_match(desc)
