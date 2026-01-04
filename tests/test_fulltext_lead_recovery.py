@@ -1,0 +1,48 @@
+from core import article_extractor
+
+
+class _FakeTrafilatura:
+    def __init__(self, precision_text: str, recall_text: str) -> None:
+        self.precision_text = precision_text
+        self.recall_text = recall_text
+        self.calls = []
+
+    def extract(self, _html: str, url=None, **kwargs):  # noqa: ARG002
+        self.calls.append({"url": url, **kwargs})
+        if kwargs.get("favor_precision"):
+            return self.precision_text
+        if kwargs.get("favor_recall"):
+            return self.recall_text
+        return ""
+
+
+def test_fulltext_lead_recovery_runs_only_on_allowlisted_domains():
+    meta_desc = "Meta intro sentence. More words to exceed forty characters for sure."
+    precision_body = ("Body sentence. " * 30).strip()  # ensure > 200 chars
+
+    html = f"""
+    <html><head>
+      <meta name="description" content="{meta_desc}">
+      <meta property="og:title" content="Some title - Wirtualne Media">
+      <title>Some title - Wirtualne Media</title>
+    </head><body><article><p>ignored</p></article></body></html>
+    """
+
+    recall_text = "\n".join(["Some title", meta_desc, precision_body])
+    fake = _FakeTrafilatura(precision_text=precision_body, recall_text=recall_text)
+
+    orig_trafilatura = article_extractor.trafilatura
+    article_extractor.trafilatura = fake
+    try:
+        out_allowed = article_extractor._trafilatura_extract_text(html, url="https://www.wirtualnemedia.pl/x")
+        assert out_allowed.startswith(meta_desc)
+        assert precision_body in out_allowed
+        assert len(fake.calls) == 2  # precision + recall
+
+        fake.calls.clear()
+        out_denied = article_extractor._trafilatura_extract_text(html, url="https://example.com/x")
+        assert out_denied == precision_body
+        assert len(fake.calls) == 1  # precision only; recall not attempted
+    finally:
+        article_extractor.trafilatura = orig_trafilatura
+

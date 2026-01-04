@@ -47,6 +47,26 @@ _MEDIA_EXTS = (
     ".pdf",
 )
 
+_LEAD_RECOVERY_ALLOWED_NETLOC_SUFFIXES = {
+    # Some sites have a meaningful lead/intro in the HTML meta description that trafilatura may
+    # skip when running in precision mode.
+    "wirtualnemedia.pl",
+}
+
+
+def _lead_recovery_enabled(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        host = (urlsplit(url).netloc or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    return any(host == d or host.endswith("." + d) for d in _LEAD_RECOVERY_ALLOWED_NETLOC_SUFFIXES)
+
 
 def _looks_like_media_url(url: str) -> bool:
     try:
@@ -297,6 +317,8 @@ def _trafilatura_extract_text(html: str, url: str = "") -> str:
     prec = (txt_prec or "").strip()
     if prec:
         if len(prec) >= 200:
+            if not _lead_recovery_enabled(url):
+                return prec
             # If the page has a meaningful meta description that is not present in the precision
             # extraction, it likely indicates a missing lead/intro paragraph.
             desc = _strip_trailing_ellipsis(_extract_meta_description(html))
