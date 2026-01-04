@@ -4,7 +4,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from core.db import get_connection
 
@@ -17,14 +17,30 @@ def _configure_conn(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
     except sqlite3.Error as e:
-        LOG.debug("Failed to set playback_state busy_timeout pragma: %s", e)
+        LOG.warning("Failed to set playback_state busy_timeout pragma: %s", e)
 
 
 def _is_locked_error(error: Exception) -> bool:
+    return isinstance(error, sqlite3.OperationalError) and ("locked" in str(error).lower())
+
+
+def _execute_write_op(op_name: str, op: Callable[[sqlite3.Cursor], None]) -> None:
+    conn = get_connection()
     try:
-        return isinstance(error, sqlite3.OperationalError) and ("locked" in str(error).lower())
-    except Exception:
-        return False
+        _configure_conn(conn)
+        c = conn.cursor()
+        try:
+            op(c)
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            # Don't block the GUI thread for long if a refresh is writing.
+            # We'll retry on the next timer tick.
+            if _is_locked_error(e):
+                LOG.debug("playback_state is locked; skipping %s", op_name)
+                return
+            raise
+    finally:
+        conn.close()
 
 
 @dataclass(frozen=True)
@@ -101,84 +117,52 @@ def upsert_playback_state(
     completed_i = 1 if bool(completed) else 0
     seek_i = None if seek_supported is None else (1 if bool(seek_supported) else 0)
 
-    conn = get_connection()
-    try:
-        _configure_conn(conn)
-        c = conn.cursor()
-        try:
-            c.execute(
-                """
-                INSERT INTO playback_state (id, position_ms, duration_ms, updated_at, completed, seek_supported, title)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    position_ms = excluded.position_ms,
-                    duration_ms = CASE
-                        WHEN excluded.duration_ms IS NOT NULL THEN excluded.duration_ms
-                        ELSE playback_state.duration_ms
-                    END,
-                    updated_at = excluded.updated_at,
-                    completed = excluded.completed,
-                    seek_supported = CASE
-                        WHEN excluded.seek_supported IS NOT NULL THEN excluded.seek_supported
-                        ELSE playback_state.seek_supported
-                    END,
-                    title = CASE
-                        WHEN excluded.title IS NOT NULL THEN excluded.title
-                        ELSE playback_state.title
-                    END
-                """,
-                (playback_id, pos, dur, ts, completed_i, seek_i, title),
-            )
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            # Don't block the GUI thread for long if a refresh is writing.
-            # We'll retry on the next timer tick.
-            if _is_locked_error(e):
-                LOG.debug("playback_state is locked; skipping position write")
-                return
-            raise
-    finally:
-        conn.close()
+    def _op(cur: sqlite3.Cursor) -> None:
+        cur.execute(
+            """
+            INSERT INTO playback_state (id, position_ms, duration_ms, updated_at, completed, seek_supported, title)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                position_ms = excluded.position_ms,
+                duration_ms = CASE
+                    WHEN excluded.duration_ms IS NOT NULL THEN excluded.duration_ms
+                    ELSE playback_state.duration_ms
+                END,
+                updated_at = excluded.updated_at,
+                completed = excluded.completed,
+                seek_supported = CASE
+                    WHEN excluded.seek_supported IS NOT NULL THEN excluded.seek_supported
+                    ELSE playback_state.seek_supported
+                END,
+                title = CASE
+                    WHEN excluded.title IS NOT NULL THEN excluded.title
+                    ELSE playback_state.title
+                END
+            """,
+            (playback_id, pos, dur, ts, completed_i, seek_i, title),
+        )
+
+    _execute_write_op("position write", _op)
 
 
 def delete_playback_state(playback_id: str) -> None:
     if not playback_id:
         return
 
-    conn = get_connection()
-    try:
-        _configure_conn(conn)
-        c = conn.cursor()
-        try:
-            c.execute("DELETE FROM playback_state WHERE id = ?", (playback_id,))
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            if _is_locked_error(e):
-                LOG.debug("playback_state is locked; skipping delete")
-                return
-            raise
-    finally:
-        conn.close()
+    def _op(cur: sqlite3.Cursor) -> None:
+        cur.execute("DELETE FROM playback_state WHERE id = ?", (playback_id,))
+
+    _execute_write_op("delete", _op)
 
 
 def set_seek_supported(playback_id: str, seek_supported: bool) -> None:
     if not playback_id:
         return
 
-    conn = get_connection()
-    try:
-        _configure_conn(conn)
-        c = conn.cursor()
-        try:
-            c.execute(
-                "UPDATE playback_state SET seek_supported = ?, updated_at = ? WHERE id = ?",
-                (1 if bool(seek_supported) else 0, int(time.time()), playback_id),
-            )
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            if _is_locked_error(e):
-                LOG.debug("playback_state is locked; skipping seek_supported update")
-                return
-            raise
-    finally:
-        conn.close()
+    def _op(cur: sqlite3.Cursor) -> None:
+        cur.execute(
+            "UPDATE playback_state SET seek_supported = ?, updated_at = ? WHERE id = ?",
+            (1 if bool(seek_supported) else 0, int(time.time()), playback_id),
+        )
+
+    _execute_write_op("seek_supported update", _op)
