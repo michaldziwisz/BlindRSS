@@ -58,6 +58,11 @@ class MainFrame(wx.Frame):
         self._update_check_inflight = False
         self._update_install_inflight = False
 
+        # Batch refresh progress updates to avoid flooding the UI thread when many feeds refresh in parallel.
+        self._refresh_progress_lock = threading.Lock()
+        self._refresh_progress_pending = {}
+        self._refresh_progress_flush_scheduled = False
+
         self.init_ui()
         self.init_menus()
         self.init_shortcuts()
@@ -870,8 +875,40 @@ class MainFrame(wx.Frame):
             wx.MessageBox(f"Error fetching feeds: {e}", "Error", wx.ICON_ERROR)
 
     def _on_feed_refresh_progress(self, state):
-        # Called from worker threads inside provider.refresh; marshal to UI thread
-        wx.CallAfter(self._apply_feed_refresh_progress, state)
+        # Called from worker threads inside provider.refresh; batch and marshal to UI thread.
+        if not state or not isinstance(state, dict):
+            return
+        try:
+            feed_id = state.get("id")
+        except Exception:
+            feed_id = None
+        if not feed_id:
+            return
+
+        try:
+            with self._refresh_progress_lock:
+                self._refresh_progress_pending[str(feed_id)] = state
+                if self._refresh_progress_flush_scheduled:
+                    return
+                self._refresh_progress_flush_scheduled = True
+            wx.CallAfter(self._flush_feed_refresh_progress)
+        except Exception:
+            try:
+                wx.CallAfter(self._apply_feed_refresh_progress, state)
+            except Exception:
+                pass
+
+    def _flush_feed_refresh_progress(self):
+        try:
+            with self._refresh_progress_lock:
+                pending = dict(self._refresh_progress_pending)
+                self._refresh_progress_pending.clear()
+                self._refresh_progress_flush_scheduled = False
+
+            for st in pending.values():
+                self._apply_feed_refresh_progress(st)
+        except Exception:
+            pass
 
     def _apply_feed_refresh_progress(self, state):
         if not state:

@@ -217,6 +217,22 @@ if not exist "%SCRIPT_DIR%config.json" (
     echo { "active_provider": "local" } > "%SCRIPT_DIR%config.json"
 )
 
+rem Preserve local test data (e.g. rss.db) between iterative builds.
+rem This is only for MODE=build; release builds must always be clean.
+set "PRESERVE_DIR="
+if /I "%MODE%"=="build" (
+    set "DIST_APP_DIR=%SCRIPT_DIR%dist\\BlindRSS"
+    if exist "!DIST_APP_DIR!\\rss.db" (
+        set "PRESERVE_DIR=%TEMP%\\BlindRSS_dist_preserve_!RANDOM!"
+        mkdir "!PRESERVE_DIR!" >nul 2>nul
+        echo [BlindRSS Build] Preserving dist user data...
+        for %%F in (rss.db rss.db-wal rss.db-shm) do (
+            if exist "!DIST_APP_DIR!\\%%F" copy /Y "!DIST_APP_DIR!\\%%F" "!PRESERVE_DIR!\\%%F" >nul
+        )
+        if exist "!DIST_APP_DIR!\\podcasts" xcopy /E /I /Y "!DIST_APP_DIR!\\podcasts" "!PRESERVE_DIR!\\podcasts" >nul 2>nul
+    )
+)
+
 echo [BlindRSS Build] Cleaning previous build...
 if exist "%SCRIPT_DIR%build" rd /s /q "%SCRIPT_DIR%build"
 if exist "%SCRIPT_DIR%dist" rd /s /q "%SCRIPT_DIR%dist"
@@ -252,6 +268,17 @@ if exist "%DIST_PLUGINS%" (
 echo [BlindRSS Build] Staging companion files into dist...
 if exist "%SCRIPT_DIR%README.md" copy /Y "%SCRIPT_DIR%README.md" "%SCRIPT_DIR%dist\README.md" >nul
 if exist "%SCRIPT_DIR%update_helper.bat" copy /Y "%SCRIPT_DIR%update_helper.bat" "%SCRIPT_DIR%dist\BlindRSS\update_helper.bat" >nul
+
+if defined PRESERVE_DIR (
+    if exist "!PRESERVE_DIR!\\rss.db" (
+        echo [BlindRSS Build] Restoring preserved dist user data...
+        for %%F in (rss.db rss.db-wal rss.db-shm) do (
+            if exist "!PRESERVE_DIR!\\%%F" copy /Y "!PRESERVE_DIR!\\%%F" "%SCRIPT_DIR%dist\\BlindRSS\\%%F" >nul
+        )
+        if exist "!PRESERVE_DIR!\\podcasts" xcopy /E /I /Y "!PRESERVE_DIR!\\podcasts" "%SCRIPT_DIR%dist\\BlindRSS\\podcasts" >nul 2>nul
+    )
+    rd /s /q "!PRESERVE_DIR!" >nul 2>nul
+)
 
 echo [BlindRSS Build] Copying exe to repo root...
 if exist "%SCRIPT_DIR%dist\BlindRSS.exe" copy /Y "%SCRIPT_DIR%dist\BlindRSS.exe" "%SCRIPT_DIR%BlindRSS.exe" >nul

@@ -4,6 +4,7 @@ import uuid
 import threading
 import sqlite3
 import concurrent.futures
+import os
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 from urllib.parse import urlparse
@@ -43,8 +44,23 @@ class LocalProvider(RSSProvider):
         if not feeds:
             return True
 
-        max_workers = max(1, int(self.config.get("max_concurrent_refreshes", 5) or 1))
-        per_host_limit = max(1, int(self.config.get("per_host_max_connections", 3) or 1))
+        configured_workers = max(1, int(self.config.get("max_concurrent_refreshes", 5) or 1))
+        configured_per_host = max(1, int(self.config.get("per_host_max_connections", 3) or 1))
+
+        # Refresh is a mix of network I/O and CPU-heavy parsing (feedparser/BeautifulSoup).
+        # Unbounded concurrency quickly starves the GUI thread due to GIL contention and DB churn.
+        cpu_count = os.cpu_count() or 4
+        hard_workers_cap = max(4, min(16, int(cpu_count) * 2))
+        max_workers = min(configured_workers, hard_workers_cap, len(feeds))
+
+        # Per-host concurrency beyond a small number rarely helps and can trigger rate limiting.
+        hard_per_host_cap = max(2, min(8, max_workers))
+        per_host_limit = min(configured_per_host, hard_per_host_cap)
+
+        if configured_workers != max_workers:
+            log.info("Clamping max_concurrent_refreshes from %s to %s for responsiveness", configured_workers, max_workers)
+        if configured_per_host != per_host_limit:
+            log.info("Clamping per_host_max_connections from %s to %s", configured_per_host, per_host_limit)
         feed_timeout = max(1, int(self.config.get("feed_timeout_seconds", 15) or 15))
         retries = max(0, int(self.config.get("feed_retry_attempts", 1) or 0))
 
