@@ -119,21 +119,29 @@ def _strip_title_suffix(title: str) -> str:
     return t
 
 
+def _extract_meta_content(soup: BeautifulSoup, candidates: List[dict]) -> str:
+    for attrs in candidates:
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            content = (tag.get("content") or "").strip()
+            if content:
+                return content
+    return ""
+
+
 def _extract_meta_description(html: str) -> str:
     if not html:
         return ""
     try:
         soup = BeautifulSoup(html, "html.parser")
-        for attrs in (
-            {"property": "og:description"},
-            {"name": "description"},
-            {"name": "twitter:description"},
-        ):
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                content = (tag.get("content") or "").strip()
-                if content:
-                    return content
+        return _extract_meta_content(
+            soup,
+            [
+                {"property": "og:description"},
+                {"name": "description"},
+                {"name": "twitter:description"},
+            ],
+        )
     except Exception:
         pass
     return ""
@@ -144,16 +152,16 @@ def _extract_page_title(html: str) -> str:
         return ""
     try:
         soup = BeautifulSoup(html, "html.parser")
-        for attrs in (
-            {"property": "og:title"},
-            {"name": "twitter:title"},
-            {"name": "title"},
-        ):
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                content = (tag.get("content") or "").strip()
-                if content:
-                    return content
+        meta_title = _extract_meta_content(
+            soup,
+            [
+                {"property": "og:title"},
+                {"name": "twitter:title"},
+                {"name": "title"},
+            ],
+        )
+        if meta_title:
+            return meta_title
         t = soup.find("title")
         if t and t.get_text(strip=True):
             return t.get_text(strip=True)
@@ -193,6 +201,51 @@ def _recover_intro_paragraphs(
     if not intro or not desc_hit:
         return []
     return intro
+
+
+def _attempt_lead_recovery(
+    html: str,
+    url: str,
+    *,
+    precision_text: str,
+    precision_norm: str,
+    do_extract: Callable[[dict], str],
+) -> Optional[str]:
+    if not _lead_recovery_enabled(url):
+        return None
+
+    desc = _strip_trailing_ellipsis(_extract_meta_description(html))
+    desc_norm = _normalize_for_match(desc)
+    if not desc_norm or len(desc_norm) < _LEAD_RECOVERY_MIN_DESC_LEN:
+        return None
+
+    desc_snippet = desc_norm[:_LEAD_RECOVERY_DESC_SNIPPET_LEN]
+    if not desc_snippet or desc_snippet in precision_norm:
+        return None
+
+    txt_rec = do_extract({"favor_recall": True})
+    rec = (txt_rec or "").strip()
+    if not rec:
+        return None
+
+    rec_norm = _normalize_for_match(rec)
+    if desc_snippet not in rec_norm:
+        return None
+
+    page_title = _strip_title_suffix(_extract_page_title(html))
+    page_title_norm = _normalize_for_match(page_title)
+
+    intro = _recover_intro_paragraphs(
+        rec,
+        precision_norm=precision_norm,
+        page_title_norm=page_title_norm,
+        desc_hit_snippet=desc_snippet[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN],
+    )
+    if not intro:
+        return None
+
+    combined = "\n\n".join(intro + [precision_text])
+    return (combined or "").strip()
 
 
 _ZDNET_BOILERPLATE_PATTERNS: List[re.Pattern] = [
@@ -359,42 +412,19 @@ def _trafilatura_extract_text(html: str, url: str = "") -> str:
     txt_prec = _do_extract({"favor_precision": True, "favor_recall": False})
     prec = (txt_prec or "").strip()
     if prec:
+        prec_norm = _normalize_for_match(prec)
         if len(prec) >= _LEAD_RECOVERY_MIN_PRECISION_LEN:
-            if not _lead_recovery_enabled(url):
-                return prec
-            # If the page has a meaningful meta description that is not present in the precision
-            # extraction, it likely indicates a missing lead/intro paragraph.
-            desc = _strip_trailing_ellipsis(_extract_meta_description(html))
-            desc_norm = _normalize_for_match(desc)
-            prec_norm = _normalize_for_match(prec)
+            recovered = _attempt_lead_recovery(
+                html,
+                url,
+                precision_text=prec,
+                precision_norm=prec_norm,
+                do_extract=_do_extract,
+            )
+            if recovered:
+                return recovered
 
-            should_try_recall = False
-            desc_snippet = ""
-            if desc_norm and len(desc_norm) >= _LEAD_RECOVERY_MIN_DESC_LEN:
-                desc_snippet = desc_norm[:_LEAD_RECOVERY_DESC_SNIPPET_LEN]
-                if desc_snippet and desc_snippet not in prec_norm:
-                    should_try_recall = True
-
-            if should_try_recall:
-                txt_rec = _do_extract({"favor_recall": True})
-                rec = (txt_rec or "").strip()
-                if rec:
-                    rec_norm = _normalize_for_match(rec)
-                    # Only attempt to recover intro if the recall result actually includes the meta description.
-                    if desc_snippet and desc_snippet in rec_norm:
-                        page_title = _strip_title_suffix(_extract_page_title(html))
-                        page_title_norm = _normalize_for_match(page_title)
-                        intro = _recover_intro_paragraphs(
-                            rec,
-                            precision_norm=prec_norm,
-                            page_title_norm=page_title_norm,
-                            desc_hit_snippet=desc_snippet[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN],
-                        )
-                        if intro:
-                            combined = "\n\n".join(intro + [prec])
-                            return (combined or "").strip()
-
-            return prec
+        return prec
 
     # Recall fallback (only when precision is empty/too short)
     txt_rec = _do_extract({"favor_recall": True})
