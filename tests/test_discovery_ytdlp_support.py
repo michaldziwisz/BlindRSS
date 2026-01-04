@@ -44,6 +44,20 @@ class YtDlpSupportDetectionTests(unittest.TestCase):
             )
         )
 
+    def test_voxmedia_articles_are_not_supported(self) -> None:
+        # VoxMedia's extractor matches most publisher pages (including articles)
+        # on sites like The Verge. Don't treat arbitrary articles as playable.
+        self.assertFalse(
+            is_ytdlp_supported(
+                "https://www.theverge.com/tech/854082/lg-cloid-home-robot-fold-laundry-ces"
+            )
+        )
+
+    def test_voxmedia_video_pages_are_supported(self) -> None:
+        self.assertTrue(
+            is_ytdlp_supported("https://www.theverge.com/videos/123456/some-video")
+        )
+
     def test_youtube_is_supported(self) -> None:
         self.assertTrue(is_ytdlp_supported("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
 

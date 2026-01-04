@@ -30,6 +30,13 @@ _MEDIA_PATH_HINTS = (
     "/track",
 )
 
+# Extractors whose URL patterns are too broad to treat as "playable media" by
+# default. For these, require explicit media-ish URL hints (see _MEDIA_PATH_HINTS)
+# to avoid classifying arbitrary articles as playable.
+_EXTRACTORS_REQUIRE_MEDIA_HINTS = {
+    "VoxMedia",  # Matches most pages on theverge.com/vox.com/etc, not just media
+}
+
 
 @lru_cache(maxsize=2048)
 def is_ytdlp_supported(url: str) -> bool:
@@ -87,6 +94,11 @@ def is_ytdlp_supported(url: str) -> bool:
                 # Many publisher sites have dedicated "...Article" extractors,
                 # which are not a good signal that a URL is a playable media page.
                 if str(key).lower().endswith("article"):
+                    continue
+                # Some extractors (e.g. VoxMedia) match most publisher pages, so
+                # only treat them as supported when the URL itself looks like a
+                # media page.
+                if key in _EXTRACTORS_REQUIRE_MEDIA_HINTS and not looks_like_media:
                     continue
                 return True
             except Exception:
