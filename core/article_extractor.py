@@ -13,7 +13,7 @@ import re
 import time
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Set
+from typing import Callable, Optional, Tuple, List, Set
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
@@ -115,9 +115,11 @@ def _strip_trailing_ellipsis(text: str) -> str:
 
 def _strip_title_suffix(title: str) -> str:
     t = (title or "").strip()
-    for sep in (" | ", " - ", " — ", " – "):
+    for sep in (" | ", " — ", " – ", " - "):
         if sep in t:
-            t = t.split(sep, 1)[0].strip()
+            # Split from the right and take the longest segment.
+            # This tends to drop short site-name suffix/prefix while keeping "Title - Subtitle".
+            return max(t.rsplit(sep, 1), key=len).strip()
     return t
 
 
