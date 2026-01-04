@@ -60,6 +60,7 @@ _LEAD_RECOVERY_MIN_PRECISION_LEN = 200
 _LEAD_RECOVERY_MIN_DESC_LEN = 60
 _LEAD_RECOVERY_DESC_SNIPPET_LEN = 120
 _LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN = 80
+_LEAD_RECOVERY_MAX_RECALL_NORM_CHARS = 8000
 _LEAD_RECOVERY_MAX_SCAN_PARAS = 8
 _LEAD_RECOVERY_MIN_PARA_LEN = 40
 _LEAD_RECOVERY_MAX_PARA_LEN = 800
@@ -115,10 +116,11 @@ def _strip_trailing_ellipsis(text: str) -> str:
 
 def _strip_title_suffix(title: str) -> str:
     t = (title or "").strip()
-    for sep in (" | ", " — ", " – ", " - "):
+    for sep in (" | ", " — ", " – "):
         if sep in t:
             # Split from the right and take the longest segment.
-            # This tends to drop short site-name suffix/prefix while keeping "Title - Subtitle".
+            # This tends to drop short site-name suffix/prefix; we intentionally avoid stripping " - "
+            # because it's common in legitimate titles.
             return max(t.rsplit(sep, 1), key=len).strip()
     return t
 
@@ -240,8 +242,8 @@ def _attempt_lead_recovery(
     if not rec:
         return None
 
-    rec_norm = _normalize_for_match(rec)
-    if desc_snippet not in rec_norm:
+    rec_head_norm = _normalize_for_match(rec[:_LEAD_RECOVERY_MAX_RECALL_NORM_CHARS])
+    if desc_snippet not in rec_head_norm:
         return None
 
     page_title = _strip_title_suffix(_extract_page_title(html, soup=soup))
