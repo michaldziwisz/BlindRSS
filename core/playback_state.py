@@ -13,6 +13,20 @@ LOG = logging.getLogger(__name__)
 _PLAYBACK_STATE_BUSY_TIMEOUT_MS = 500
 
 
+def _configure_conn(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
+    except sqlite3.Error:
+        pass
+
+
+def _is_locked_error(error: Exception) -> bool:
+    try:
+        return isinstance(error, sqlite3.OperationalError) and ("locked" in str(error).lower())
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class PlaybackState:
     id: str
@@ -30,10 +44,7 @@ def get_playback_state(playback_id: str) -> Optional[PlaybackState]:
 
     conn = get_connection()
     try:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
-        except Exception:
-            pass
+        _configure_conn(conn)
         c = conn.cursor()
         c.execute(
             "SELECT id, position_ms, duration_ms, updated_at, completed, seek_supported, title "
@@ -92,10 +103,7 @@ def upsert_playback_state(
 
     conn = get_connection()
     try:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
-        except Exception:
-            pass
+        _configure_conn(conn)
         c = conn.cursor()
         try:
             c.execute(
@@ -125,7 +133,7 @@ def upsert_playback_state(
         except sqlite3.OperationalError as e:
             # Don't block the GUI thread for long if a refresh is writing.
             # We'll retry on the next timer tick.
-            if "locked" in str(e).lower():
+            if _is_locked_error(e):
                 LOG.debug("playback_state is locked; skipping position write")
                 return
             raise
@@ -139,16 +147,13 @@ def delete_playback_state(playback_id: str) -> None:
 
     conn = get_connection()
     try:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
-        except Exception:
-            pass
+        _configure_conn(conn)
         c = conn.cursor()
         try:
             c.execute("DELETE FROM playback_state WHERE id = ?", (playback_id,))
             conn.commit()
         except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower():
+            if _is_locked_error(e):
                 LOG.debug("playback_state is locked; skipping delete")
                 return
             raise
@@ -162,10 +167,7 @@ def set_seek_supported(playback_id: str, seek_supported: bool) -> None:
 
     conn = get_connection()
     try:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={int(_PLAYBACK_STATE_BUSY_TIMEOUT_MS)}")
-        except Exception:
-            pass
+        _configure_conn(conn)
         c = conn.cursor()
         try:
             c.execute(
@@ -174,7 +176,7 @@ def set_seek_supported(playback_id: str, seek_supported: bool) -> None:
             )
             conn.commit()
         except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower():
+            if _is_locked_error(e):
                 LOG.debug("playback_state is locked; skipping seek_supported update")
                 return
             raise

@@ -876,39 +876,40 @@ class MainFrame(wx.Frame):
 
     def _on_feed_refresh_progress(self, state):
         # Called from worker threads inside provider.refresh; batch and marshal to UI thread.
-        if not state or not isinstance(state, dict):
+        if not isinstance(state, dict):
             return
-        try:
-            feed_id = state.get("id")
-        except Exception:
-            feed_id = None
+        feed_id = state.get("id")
         if not feed_id:
             return
 
+        with self._refresh_progress_lock:
+            self._refresh_progress_pending[str(feed_id)] = state
+            if self._refresh_progress_flush_scheduled:
+                return
+            self._refresh_progress_flush_scheduled = True
+
         try:
-            with self._refresh_progress_lock:
-                self._refresh_progress_pending[str(feed_id)] = state
-                if self._refresh_progress_flush_scheduled:
-                    return
-                self._refresh_progress_flush_scheduled = True
             wx.CallAfter(self._flush_feed_refresh_progress)
         except Exception:
+            # Likely during shutdown; avoid leaving the "scheduled" latch stuck.
+            with self._refresh_progress_lock:
+                self._refresh_progress_flush_scheduled = False
             try:
                 wx.CallAfter(self._apply_feed_refresh_progress, state)
             except Exception:
-                pass
+                log.debug("Failed to schedule feed refresh progress update", exc_info=True)
 
     def _flush_feed_refresh_progress(self):
-        try:
-            with self._refresh_progress_lock:
-                pending = dict(self._refresh_progress_pending)
-                self._refresh_progress_pending.clear()
-                self._refresh_progress_flush_scheduled = False
+        with self._refresh_progress_lock:
+            pending = list(self._refresh_progress_pending.values())
+            self._refresh_progress_pending.clear()
+            self._refresh_progress_flush_scheduled = False
 
-            for st in pending.values():
+        for st in pending:
+            try:
                 self._apply_feed_refresh_progress(st)
-        except Exception:
-            pass
+            except Exception:
+                log.debug("Failed to apply feed refresh progress update", exc_info=True)
 
     def _apply_feed_refresh_progress(self, state):
         if not state:
