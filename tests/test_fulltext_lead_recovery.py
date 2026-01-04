@@ -16,7 +16,7 @@ class _FakeTrafilatura:
         return ""
 
 
-def test_fulltext_lead_recovery_runs_only_on_allowlisted_domains():
+def test_fulltext_lead_recovery_runs_only_on_allowlisted_domains(monkeypatch):
     meta_desc = "Meta intro sentence. More words to exceed forty characters for sure."
     precision_body = ("Body sentence. " * 30).strip()  # ensure > 200 chars
 
@@ -31,18 +31,14 @@ def test_fulltext_lead_recovery_runs_only_on_allowlisted_domains():
     recall_text = "\n".join(["Some title", meta_desc, precision_body])
     fake = _FakeTrafilatura(precision_text=precision_body, recall_text=recall_text)
 
-    orig_trafilatura = article_extractor.trafilatura
-    article_extractor.trafilatura = fake
-    try:
-        out_allowed = article_extractor._trafilatura_extract_text(html, url="https://www.wirtualnemedia.pl/x")
-        assert out_allowed.startswith(meta_desc)
-        assert precision_body in out_allowed
-        assert len(fake.calls) == 2  # precision + recall
+    monkeypatch.setattr(article_extractor, "trafilatura", fake)
 
-        fake.calls.clear()
-        out_denied = article_extractor._trafilatura_extract_text(html, url="https://example.com/x")
-        assert out_denied == precision_body
-        assert len(fake.calls) == 1  # precision only; recall not attempted
-    finally:
-        article_extractor.trafilatura = orig_trafilatura
+    out_allowed = article_extractor._trafilatura_extract_text(html, url="https://www.wirtualnemedia.pl/x")
+    assert out_allowed.startswith(meta_desc)
+    assert precision_body in out_allowed
+    assert len(fake.calls) == 2  # precision + recall
 
+    fake.calls.clear()
+    out_denied = article_extractor._trafilatura_extract_text(html, url="https://example.com/x")
+    assert out_denied == precision_body
+    assert len(fake.calls) == 1  # precision only; recall not attempted

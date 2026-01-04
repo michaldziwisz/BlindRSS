@@ -68,13 +68,12 @@ def _lead_recovery_enabled(url: str) -> bool:
     if not url:
         return False
     try:
-        host = (urlsplit(url).netloc or "").lower()
+        host = urlsplit(url).hostname
     except (TypeError, ValueError):
         return False
     if not host:
         return False
-    if ":" in host:
-        host = host.split(":", 1)[0]
+    host = host.lower()
     return any(host == d or host.endswith("." + d) for d in _LEAD_RECOVERY_ALLOWED_NETLOC_SUFFIXES)
 
 
