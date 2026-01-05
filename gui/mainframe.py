@@ -1993,7 +1993,7 @@ class MainFrame(wx.Frame):
             try:
                 rendered = article_extractor.render_full_article(
                     url,
-                    fallback_html="",
+                    fallback_html=fallback_html,
                     fallback_title=fallback_title,
                     fallback_author=fallback_author,
                 )

@@ -573,12 +573,20 @@ def _soup_extract_text(html: str) -> str:
 
 
 def _extract_text_any(html: str, url: str = "") -> str:
-    txt = _trafilatura_extract_text(html, url=url)
+    # 1. Try JSON-LD first (often high quality on major sites like Wired)
     json_txt = _extract_json_ld_text(html)
+    
+    # Optimization: if JSON-LD gave us a substantial article, skip expensive Trafilatura
+    if json_txt and len(json_txt) > 1000:
+        return _normalize_whitespace(json_txt)
+
+    # 2. Try Trafilatura
+    txt = _trafilatura_extract_text(html, url=url)
 
     if txt and json_txt:
         txt_norm = _normalize_whitespace(txt)
         json_norm = _normalize_whitespace(json_txt)
+        # If JSON-LD is significantly longer, prefer it
         if len(json_norm) > len(txt_norm) * 1.1:
             return json_norm
         return txt_norm
@@ -587,6 +595,8 @@ def _extract_text_any(html: str, url: str = "") -> str:
         return _normalize_whitespace(json_txt)
     if txt:
         return _normalize_whitespace(txt)
+    
+    # 3. Last resort fallback
     txt = _soup_extract_text(html)
     return _normalize_whitespace(txt)
 
@@ -597,6 +607,16 @@ def _find_next_page(html: str, base_url: str) -> Optional[str]:
         return None
 
     try:
+        # Wired.com specific optimization:
+        # Wired articles are typically single-page. "Next" links usually point to the *next story*,
+        # which we definitely do NOT want to append.
+        try:
+            host = urlsplit(base_url).hostname
+            if host and (host == "wired.com" or host.endswith(".wired.com")):
+                return None
+        except Exception:
+            pass
+
         soup = BeautifulSoup(html, "html.parser")
 
         # 1) <link rel="next" href="...">
@@ -621,6 +641,11 @@ def _find_next_page(html: str, base_url: str) -> Optional[str]:
             text = (tag.get_text(" ", strip=True) or "").lower()
             cls = " ".join(tag.get("class") or []).lower()
             aria = (tag.get("aria-label") or "").lower()
+            
+            # Avoid "Next Story", "Next Article" which are common on news sites
+            if "next story" in text or "next article" in text:
+                continue
+                
             if (
                 any(k in text for k in ("next", "older", "next page"))
                 or text in (">", ">>", "›", "»")
