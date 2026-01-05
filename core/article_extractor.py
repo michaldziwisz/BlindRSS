@@ -207,7 +207,7 @@ def _extract_allowlisted_lead_from_html(soup: BeautifulSoup, url: str) -> str:
         return ""
     host = host.lower()
 
-    if host == "www.wirtualnemedia.pl" or host.endswith(".wirtualnemedia.pl"):
+    if host == "wirtualnemedia.pl" or host.endswith(".wirtualnemedia.pl"):
         node = soup.find("div", class_="wm-article-header-lead")
         if node:
             return (node.get_text(" ", strip=True) or "").strip()
@@ -233,9 +233,7 @@ def _recover_intro_paragraphs(
             break
         if page_title_norm and pn == page_title_norm:
             continue
-        if len(p) < _LEAD_RECOVERY_MIN_PARA_LEN or len(p) > _LEAD_RECOVERY_MAX_PARA_LEN:
-            continue
-        if not re.search(r"[.!?]", p) and len(p) < _LEAD_RECOVERY_MIN_PUNCT_PARA_LEN:
+        if not _is_reasonable_lead_paragraph(p):
             continue
         if desc_hit_snippet and desc_hit_snippet in pn:
             desc_hit = True
