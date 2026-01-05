@@ -67,3 +67,33 @@ def test_fulltext_lead_recovery_falls_back_to_meta_description_when_recall_misse
     assert out.startswith(meta_desc)
     assert precision_body in out
     assert len(fake.calls) == 2  # precision + recall
+
+
+def test_fulltext_lead_recovery_uses_site_lead_html_when_available(monkeypatch):
+    lead_text = (
+        'Indyjskie ministerstwo IT wydało nakaz firmie X należącej do Elona Muska podjęcia działań '
+        'naprawczych wobec Groka. Chodzi między innymi o ograniczenie generowania treści zawierających '
+        '"nagość, seksualizację, treści o charakterze seksualnym lub w inny sposób niezgodne z prawem".'
+    )
+    meta_desc = lead_text[:180] + "..."
+    precision_body = ("Body sentence. " * 30).strip()  # ensure > 200 chars
+
+    html = f"""
+    <html><head>
+      <meta name="description" content="{meta_desc}">
+      <meta property="og:title" content="Some title - Wirtualne Media">
+      <title>Some title - Wirtualne Media</title>
+    </head><body>
+      <article>
+        <div class="wm-article-header-lead"><p>{lead_text}</p></div>
+      </article>
+    </body></html>
+    """
+
+    fake = _FakeTrafilatura(precision_text=precision_body, recall_text="")
+    monkeypatch.setattr(article_extractor, "trafilatura", fake)
+
+    out = article_extractor._trafilatura_extract_text(html, url="https://www.wirtualnemedia.pl/x")
+    assert out.startswith(lead_text)
+    assert precision_body in out
+    assert len(fake.calls) == 1  # precision only; no need for recall

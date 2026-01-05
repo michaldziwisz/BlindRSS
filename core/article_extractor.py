@@ -187,6 +187,23 @@ def _extract_page_title(*, html: Optional[str] = None, soup: Optional[BeautifulS
     return ""
 
 
+def _extract_allowlisted_lead_from_html(soup: BeautifulSoup, url: str) -> str:
+    try:
+        host = urlsplit(url).hostname
+    except Exception:
+        host = None
+    if not host or not isinstance(host, str):
+        return ""
+    host = host.lower()
+
+    if host == "www.wirtualnemedia.pl" or host.endswith(".wirtualnemedia.pl"):
+        node = soup.find("div", class_="wm-article-header-lead")
+        if node:
+            return (node.get_text(" ", strip=True) or "").strip()
+
+    return ""
+
+
 def _recover_intro_paragraphs(
     recall_text: str,
     *,
@@ -241,6 +258,7 @@ def _attempt_lead_recovery(
         return None
 
     desc_snippet = desc_norm[:_LEAD_RECOVERY_DESC_SNIPPET_LEN]
+    desc_hit_snippet = desc_norm[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN]
     if desc_snippet in precision_norm:
         return None
 
@@ -255,6 +273,15 @@ def _attempt_lead_recovery(
             return None
         combined = "\n\n".join([desc, precision_text])
         return (combined or "").strip()
+
+    lead_html = _extract_allowlisted_lead_from_html(soup, url)
+    lead_html_norm = _normalize_for_match(lead_html)
+    if lead_html_norm and desc_hit_snippet and desc_hit_snippet in lead_html_norm and lead_html_norm not in precision_norm:
+        if _LEAD_RECOVERY_MIN_PARA_LEN <= len(lead_html) <= _LEAD_RECOVERY_MAX_PARA_LEN and (
+            re.search(r"[.!?]", lead_html) or len(lead_html) >= _LEAD_RECOVERY_MIN_PUNCT_PARA_LEN
+        ):
+            combined = "\n\n".join([lead_html, precision_text])
+            return (combined or "").strip()
 
     txt_rec = do_extract({"favor_recall": True})
     rec = (txt_rec or "").strip()
@@ -274,7 +301,7 @@ def _attempt_lead_recovery(
         rec,
         precision_paras_norm=precision_paras_norm,
         page_title_norm=page_title_norm,
-        desc_hit_snippet=desc_snippet[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN],
+        desc_hit_snippet=desc_hit_snippet,
     )
     if not intro:
         return _fallback_prepend_meta_desc()
