@@ -163,14 +163,10 @@ def _extract_meta_description(*, html: Optional[str] = None, soup: Optional[Beau
         if soup is None:
             return ""
 
-    try:
-        return _extract_meta_content(
-            soup,
-            _META_DESCRIPTION_TAG_ATTRS,
-        )
-    except Exception:
-        LOG.debug("Failed to extract meta description", exc_info=True)
-        return ""
+    return _extract_meta_content(
+        soup,
+        _META_DESCRIPTION_TAG_ATTRS,
+    )
 
 
 def _extract_page_title(*, html: Optional[str] = None, soup: Optional[BeautifulSoup] = None) -> str:
@@ -179,19 +175,15 @@ def _extract_page_title(*, html: Optional[str] = None, soup: Optional[BeautifulS
         if soup is None:
             return ""
 
-    try:
-        meta_title = _extract_meta_content(
-            soup,
-            _META_TITLE_TAG_ATTRS,
-        )
-        if meta_title:
-            return meta_title
-        t = soup.find("title")
-        if t and t.get_text(strip=True):
-            return t.get_text(strip=True)
-    except Exception:
-        LOG.debug("Failed to extract page title", exc_info=True)
-        return ""
+    meta_title = _extract_meta_content(
+        soup,
+        _META_TITLE_TAG_ATTRS,
+    )
+    if meta_title:
+        return meta_title
+    t = soup.find("title")
+    if t and t.get_text(strip=True):
+        return t.get_text(strip=True)
     return ""
 
 
@@ -245,7 +237,11 @@ def _attempt_lead_recovery(
         LOG.debug("Failed to parse HTML for lead recovery", exc_info=True)
         return None
 
-    desc = _strip_trailing_ellipsis(_extract_meta_description(soup=soup))
+    try:
+        desc = _strip_trailing_ellipsis(_extract_meta_description(soup=soup))
+    except Exception:
+        LOG.debug("Failed to extract meta description for lead recovery", exc_info=True)
+        return None
     desc_norm = _normalize_for_match(desc)
     if not desc_norm or len(desc_norm) < _LEAD_RECOVERY_MIN_DESC_LEN:
         return None
@@ -263,7 +259,11 @@ def _attempt_lead_recovery(
     if desc_snippet not in rec_head_norm:
         return None
 
-    page_title = _strip_title_suffix(_extract_page_title(soup=soup))
+    try:
+        page_title = _strip_title_suffix(_extract_page_title(soup=soup))
+    except Exception:
+        LOG.debug("Failed to extract page title for lead recovery", exc_info=True)
+        page_title = ""
     page_title_norm = _normalize_for_match(page_title)
 
     intro = _recover_intro_paragraphs(
