@@ -190,7 +190,7 @@ def _extract_page_title(*, html: Optional[str] = None, soup: Optional[BeautifulS
 def _recover_intro_paragraphs(
     recall_text: str,
     *,
-    precision_norm: str,
+    precision_paras_norm: Set[str],
     page_title_norm: str,
     desc_hit_snippet: str,
 ) -> List[str]:
@@ -201,7 +201,7 @@ def _recover_intro_paragraphs(
         pn = _normalize_for_match(p)
         if not pn:
             continue
-        if pn in precision_norm:
+        if pn in precision_paras_norm:
             break
         if page_title_norm and pn == page_title_norm:
             continue
@@ -256,9 +256,15 @@ def _attempt_lead_recovery(
     page_title = _strip_title_suffix(_extract_page_title(soup=soup))
     page_title_norm = _normalize_for_match(page_title)
 
+    precision_paras_norm: Set[str] = set()
+    for p in _split_paragraphs(precision_text):
+        pn = _normalize_for_match(p)
+        if pn:
+            precision_paras_norm.add(pn)
+
     intro = _recover_intro_paragraphs(
         rec,
-        precision_norm=precision_norm,
+        precision_paras_norm=precision_paras_norm,
         page_title_norm=page_title_norm,
         desc_hit_snippet=desc_snippet[:_LEAD_RECOVERY_DESC_HIT_SNIPPET_LEN],
     )
