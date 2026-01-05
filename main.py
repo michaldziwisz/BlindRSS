@@ -45,6 +45,7 @@ from core.dependency_check import check_and_install_dependencies
 import wx
 from core.config import ConfigManager
 from core.factory import get_provider
+from core import updater as app_updater
 from gui.mainframe import MainFrame
 from core.stream_proxy import get_proxy
 from core.range_cache_proxy import get_range_cache_proxy
@@ -113,6 +114,10 @@ class RSSApp(wx.App):
     def OnInit(self):
         self.config_manager = ConfigManager()
         _enable_debug_console(self.config_manager)
+        try:
+            app_updater.cleanup_update_artifacts()
+        except Exception as e:
+            log.debug(f"Update cleanup failed: {e}")
 
         # Run dependency check in background so GUI is not blocked
         threading.Thread(target=check_and_install_dependencies, daemon=True).start()

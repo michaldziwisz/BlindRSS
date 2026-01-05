@@ -14,6 +14,7 @@ set "PID=%~1"
 set "INSTALL_DIR=%~2"
 set "STAGING_DIR=%~3"
 set "EXE_NAME=%~4"
+set "TEMP_ROOT=%~5"
 
 if "%PID%"=="" goto :usage
 if "%INSTALL_DIR%"=="" goto :usage
@@ -94,6 +95,7 @@ call :restore_user_data "%BACKUP_DIR%" "%INSTALL_DIR%"
 
 echo [BlindRSS Update] Launching app...
 start "" "%INSTALL_DIR%\%EXE_NAME%"
+call :cleanup_success "%BACKUP_DIR%" "%STAGING_DIR%" "%TEMP_ROOT%"
 exit /b 0
 
 :rollback
@@ -137,6 +139,120 @@ if exist "%OLD_DIR%\podcasts" (
 endlocal
 exit /b 0
 
+:cleanup_success
+setlocal
+set "BACKUP_DIR=%~1"
+set "STAGING_DIR=%~2"
+set "TEMP_ROOT=%~3"
+set "KEEP_BACKUP=0"
+
+call :should_keep_backup "%BACKUP_DIR%" "%INSTALL_DIR%"
+
+if "%KEEP_BACKUP%"=="1" (
+    echo [BlindRSS Update] Keeping backup for safety: "%BACKUP_DIR%"
+) else (
+    call :safe_rmdir "%BACKUP_DIR%" "backup" "%INSTALL_DIR%_backup_"
+)
+
+call :safe_rmdir "%STAGING_DIR%" "staging" "BlindRSS_update_"
+
+if "%TEMP_ROOT%"=="" (
+    call :derive_temp_root "%STAGING_DIR%"
+)
+
+if not "%TEMP_ROOT%"=="" (
+    call :schedule_temp_cleanup "%TEMP_ROOT%"
+)
+
+endlocal
+exit /b 0
+
+:should_keep_backup
+setlocal
+set "BACKUP_DIR=%~1"
+set "INSTALL_DIR=%~2"
+set "KEEP=0"
+
+if not exist "%BACKUP_DIR%" goto :keep_done
+if not exist "%INSTALL_DIR%" goto :keep_done
+
+if exist "%BACKUP_DIR%\config.json" if not exist "%INSTALL_DIR%\config.json" set "KEEP=1"
+
+for %%F in (rss.db rss.db-wal rss.db-shm rss.db-journal) do (
+    if exist "%BACKUP_DIR%\%%F" if not exist "%INSTALL_DIR%\%%F" set "KEEP=1"
+)
+
+if exist "%BACKUP_DIR%\podcasts" if not exist "%INSTALL_DIR%\podcasts" set "KEEP=1"
+
+:keep_done
+endlocal & set "KEEP_BACKUP=%KEEP%"
+exit /b 0
+
+:derive_temp_root
+setlocal
+set "STAGING_DIR=%~1"
+if "%STAGING_DIR%"=="" goto :derive_done
+
+for %%I in ("%STAGING_DIR%") do (
+    set "STAGING_DIR=%%~fI"
+    set "STAGING_NAME=%%~nxI"
+    set "STAGING_PARENT=%%~dpI"
+)
+
+if /I "%STAGING_NAME%"=="extract" (
+    endlocal & set "TEMP_ROOT=%STAGING_PARENT%" & exit /b 0
+)
+
+for %%I in ("%STAGING_PARENT%.") do (
+    set "STAGING_PARENT=%%~fI"
+    set "PARENT_NAME=%%~nxI"
+    set "PARENT_PARENT=%%~dpI"
+)
+
+if /I "%PARENT_NAME%"=="extract" (
+    endlocal & set "TEMP_ROOT=%PARENT_PARENT%" & exit /b 0
+)
+
+:derive_done
+endlocal & set "TEMP_ROOT="
+exit /b 0
+
+:schedule_temp_cleanup
+setlocal
+set "TEMP_ROOT=%~1"
+if "%TEMP_ROOT%"=="" goto :schedule_done
+
+start "" /b powershell -NoProfile -WindowStyle Hidden -Command "param([string]$path,[string]$install) Start-Sleep -Seconds 2; try { if (-not $path) { return }; $full=[IO.Path]::GetFullPath($path); $inst=[IO.Path]::GetFullPath($install); if ($full -ieq $inst) { return }; if ($full -notmatch 'BlindRSS_update_') { return }; if (Test-Path -LiteralPath $full -PathType Container) { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue }; $parent = Split-Path -Parent $full; if ((Split-Path -Leaf $parent) -ieq '_BlindRSS_update_tmp') { if (-not (Get-ChildItem -LiteralPath $parent -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $parent -Recurse -Force -ErrorAction SilentlyContinue } } } catch { }" "%TEMP_ROOT%" "%INSTALL_DIR%" >nul 2>nul
+
+:schedule_done
+endlocal
+exit /b 0
+
+:safe_rmdir
+setlocal
+set "TARGET=%~1"
+set "LABEL=%~2"
+set "REQUIRED_SUBSTR=%~3"
+if "%TARGET%"=="" goto :safe_done
+
+for %%I in ("%TARGET%") do set "TARGET=%%~fI"
+if not exist "%TARGET%" goto :safe_done
+if /I "%TARGET%"=="%INSTALL_DIR%" goto :safe_done
+if /I "%TARGET%"=="%SystemRoot%" goto :safe_done
+if /I "%TARGET%"=="%SystemDrive%\" goto :safe_done
+
+if not "%REQUIRED_SUBSTR%"=="" (
+    echo(%TARGET%| find /I "%REQUIRED_SUBSTR%" >nul
+    if errorlevel 1 goto :safe_done
+)
+
+rmdir /s /q "%TARGET%" >nul 2>nul
+echo [BlindRSS Update] Cleaned %LABEL% "%TARGET%"
+
+:safe_done
+endlocal
+exit /b 0
+
 :usage
-echo Usage: update_helper.bat ^<pid^> ^<install_dir^> ^<staging_dir^> ^<exe_name^>
+echo Usage: update_helper.bat ^<pid^> ^<install_dir^> ^<staging_dir^> ^<exe_name^> [temp_root]
 exit /b 1

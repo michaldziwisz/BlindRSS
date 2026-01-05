@@ -1,3 +1,4 @@
+import glob
 import json
 import logging
 import os
@@ -279,7 +280,14 @@ def _verify_authenticode_signature(exe_path: str, allowed_thumbprints: Iterable[
     return True, ""
 
 
-def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, staging_root: str, debug_mode: bool = False) -> Tuple[bool, str]:
+def _launch_update_helper(
+    helper_path: str,
+    parent_pid: int,
+    install_dir: str,
+    staging_root: str,
+    temp_root: Optional[str] = None,
+    debug_mode: bool = False,
+) -> Tuple[bool, str]:
     try:
         helper_cwd = None
         try:
@@ -307,10 +315,12 @@ def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, s
                 staging_root,
                 EXE_NAME,
             ]
+            if temp_root:
+                cmd.append(temp_root)
             subprocess.Popen(
-                cmd, 
-                cwd=helper_cwd, 
-                creationflags=creationflags, 
+                cmd,
+                cwd=helper_cwd,
+                creationflags=creationflags,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -329,6 +339,8 @@ def _launch_update_helper(helper_path: str, parent_pid: int, install_dir: str, s
                 staging_root,
                 EXE_NAME,
             ]
+            if temp_root:
+                cmd.append(temp_root)
             subprocess.Popen(cmd, cwd=helper_cwd)
             
         return True, ""
@@ -365,6 +377,70 @@ def _make_update_temp_root(install_dir: str) -> str:
             continue
 
     return tempfile.mkdtemp(prefix="BlindRSS_update_")
+
+
+def _safe_remove_dir(path: str, install_dir: str, reason: str) -> None:
+    if not path:
+        return
+    try:
+        full_path = os.path.realpath(path)
+    except Exception:
+        return
+    if not os.path.isdir(full_path):
+        return
+
+    try:
+        install_path = os.path.realpath(install_dir)
+    except Exception:
+        install_path = install_dir
+
+    install_norm = os.path.normcase(install_path)
+    target_norm = os.path.normcase(full_path)
+    if target_norm in (install_norm, os.path.normcase(os.path.dirname(install_path))):
+        return
+    if target_norm == os.path.normcase(os.path.abspath(os.sep)):
+        return
+
+    try:
+        shutil.rmtree(full_path)
+        log.info("Removed update artifact (%s): %s", reason, full_path)
+    except Exception as e:
+        log.debug("Failed to remove update artifact (%s): %s", reason, e)
+
+
+def cleanup_update_artifacts(install_dir: Optional[str] = None) -> None:
+    """Remove leftover update folders from previous runs."""
+    if not getattr(sys, "frozen", False):
+        return
+
+    install_dir = os.path.abspath(install_dir or APP_DIR)
+    parent_dir = os.path.dirname(install_dir)
+    install_base = os.path.basename(install_dir).lower()
+
+    for path in glob.glob(f"{install_dir}_backup_*"):
+        base = os.path.basename(path).lower()
+        if base.startswith(f"{install_base}_backup_"):
+            _safe_remove_dir(path, install_dir, "backup")
+
+    update_tmp_parent = os.path.join(parent_dir, "_BlindRSS_update_tmp")
+    try:
+        if os.path.isdir(update_tmp_parent):
+            for entry in os.listdir(update_tmp_parent):
+                if entry.startswith("BlindRSS_update_"):
+                    _safe_remove_dir(os.path.join(update_tmp_parent, entry), install_dir, "temp")
+            if not os.listdir(update_tmp_parent):
+                _safe_remove_dir(update_tmp_parent, install_dir, "temp parent")
+    except Exception as e:
+        log.debug("Failed to clean update temp parent: %s", e)
+
+    try:
+        temp_dir = tempfile.gettempdir()
+        for entry in os.listdir(temp_dir):
+            if entry.startswith("BlindRSS_update_"):
+                candidate = os.path.join(temp_dir, entry)
+                _safe_remove_dir(candidate, install_dir, "temp")
+    except Exception as e:
+        log.debug("Failed to clean system temp updates: %s", e)
 
 
 def download_and_apply_update(info: UpdateInfo, debug_mode: bool = False) -> Tuple[bool, str]:
@@ -417,7 +493,14 @@ def download_and_apply_update(info: UpdateInfo, debug_mode: bool = False) -> Tup
     except Exception:
         helper_run_path = helper_path
 
-    ok, msg = _launch_update_helper(helper_run_path, os.getpid(), install_dir, staging_root, debug_mode=debug_mode)
+    ok, msg = _launch_update_helper(
+        helper_run_path,
+        os.getpid(),
+        install_dir,
+        staging_root,
+        temp_root=temp_root,
+        debug_mode=debug_mode,
+    )
     if not ok:
         return False, msg
 
