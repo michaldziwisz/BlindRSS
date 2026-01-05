@@ -333,7 +333,7 @@ class MainFrame(wx.Frame):
         
         file_menu = wx.Menu()
         add_feed_item = file_menu.Append(wx.ID_ANY, "&Add Feed\tCtrl+N", "Add a new RSS feed")
-        remove_feed_item = file_menu.Append(wx.ID_ANY, "&Remove Feed\tDelete", "Remove selected feed")
+        remove_feed_item = file_menu.Append(wx.ID_ANY, "&Remove Feed", "Remove selected feed")
         refresh_item = file_menu.Append(wx.ID_REFRESH, "&Refresh Feeds\tF5", "Refresh all feeds")
         file_menu.AppendSeparator()
         add_cat_item = file_menu.Append(wx.ID_ANY, "Add &Category", "Add a new category")
@@ -411,6 +411,21 @@ class MainFrame(wx.Frame):
 
     def on_char_hook(self, event: wx.KeyEvent) -> None:
         """Global media shortcuts while the main window is focused."""
+        try:
+            key = event.GetKeyCode()
+        except Exception:
+            key = None
+
+        if key == wx.WXK_DELETE:
+            focus = None
+            try:
+                focus = wx.Window.FindFocus()
+            except Exception:
+                focus = None
+            if focus == getattr(self, "list_ctrl", None):
+                self.on_delete_article()
+                return
+
         if event.ControlDown():
             pw = getattr(self, "player_window", None)
             if pw and getattr(pw, "has_media_loaded", None) and pw.has_media_loaded():
@@ -623,8 +638,11 @@ class MainFrame(wx.Frame):
         menu = wx.Menu()
         open_item = menu.Append(wx.ID_ANY, "Open Article")
         copy_item = menu.Append(wx.ID_ANY, "Copy Link")
+        delete_item = None
         download_item = None
         if idx != wx.NOT_FOUND and 0 <= idx < len(self.current_articles):
+            if not self._is_load_more_row(idx):
+                delete_item = menu.Append(wx.ID_ANY, "Delete Article\tDelete")
             article_for_menu = self.current_articles[idx]
             if article_for_menu.media_url:
                 download_item = menu.Append(wx.ID_ANY, "Download")
@@ -641,7 +659,9 @@ class MainFrame(wx.Frame):
         # For simplicity, pass idx to lambda
         self.Bind(wx.EVT_MENU, lambda e: self.on_article_activate(event=wx.ListEvent(wx.EVT_LIST_ITEM_ACTIVATED.type, self.list_ctrl.GetId(), idx=idx)), open_item)
         self.Bind(wx.EVT_MENU, lambda e: self.on_copy_link(idx), copy_item)
-        
+        if delete_item:
+            self.Bind(wx.EVT_MENU, lambda e: self.on_delete_article(), delete_item)
+
         self.list_ctrl.PopupMenu(menu, menu_pos)
         menu.Destroy()
 
@@ -758,6 +778,109 @@ class MainFrame(wx.Frame):
                     self.list_ctrl.Thaw()
                 except Exception:
                     log.exception("Error thawing list_ctrl")
+
+    def _remove_article_from_cached_views(self, article_id: str) -> None:
+        try:
+            with getattr(self, "_view_cache_lock", threading.Lock()):
+                for st in (self.view_cache or {}).values():
+                    articles = list(st.get("articles") or [])
+                    if not articles:
+                        continue
+                    new_articles = [a for a in articles if getattr(a, "id", None) != article_id]
+                    if len(new_articles) == len(articles):
+                        continue
+                    st["articles"] = new_articles
+                    st["id_set"] = {a.id for a in new_articles}
+                    if st.get("total") is not None:
+                        try:
+                            st["total"] = max(0, int(st.get("total") or 0) - 1)
+                        except Exception:
+                            st["total"] = max(0, len(new_articles))
+        except Exception:
+            log.exception("Error removing article from cached views")
+
+    def on_delete_article(self, event=None):
+        idx = self._get_selected_article_index()
+        if idx == wx.NOT_FOUND:
+            return
+        if self._is_load_more_row(idx):
+            return
+        if idx < 0 or idx >= len(self.current_articles):
+            return
+
+        article = self.current_articles[idx]
+        try:
+            ok = wx.MessageBox(
+                "Delete this article? This cannot be undone.",
+                "Confirm Delete",
+                wx.YES_NO | wx.ICON_WARNING,
+            )
+        except Exception:
+            ok = wx.NO
+        if ok != wx.YES:
+            return
+
+        if not bool(getattr(self.provider, "supports_article_delete", lambda: False)()):
+            wx.MessageBox(
+                "This provider does not support deleting articles.",
+                "Not Supported",
+                wx.ICON_INFORMATION,
+            )
+            return
+
+        cache_key, _url, _aid = self._fulltext_cache_key_for_article(article, idx)
+        threading.Thread(
+            target=self._delete_article_thread,
+            args=(article.id, cache_key),
+            daemon=True,
+        ).start()
+
+    def _delete_article_thread(self, article_id: str, cache_key: str) -> None:
+        ok = False
+        err = ""
+        try:
+            ok = bool(self.provider.delete_article(article_id))
+        except Exception as e:
+            err = str(e) or "Unknown error"
+        wx.CallAfter(self._post_delete_article, article_id, cache_key, ok, err)
+
+    def _post_delete_article(self, article_id: str, cache_key: str, ok: bool, err: str) -> None:
+        if not ok:
+            msg = "Could not delete article."
+            if err:
+                msg += f"\n\n{err}"
+            wx.MessageBox(msg, "Error", wx.ICON_ERROR)
+            return
+
+        try:
+            self._fulltext_cache.pop(cache_key, None)
+        except Exception:
+            pass
+
+        idx = None
+        for i, a in enumerate(self.current_articles):
+            if getattr(a, "id", None) == article_id:
+                idx = i
+                break
+
+        if idx is not None:
+            self._remove_article_from_current_list(idx)
+
+        self._remove_article_from_cached_views(article_id)
+
+        if not self.current_articles:
+            self._show_empty_articles_state()
+            return
+
+        # Select the next closest item to keep navigation smooth.
+        next_idx = 0
+        if idx is not None:
+            next_idx = min(idx, len(self.current_articles) - 1)
+        try:
+            self.list_ctrl.Select(next_idx)
+            self.list_ctrl.Focus(next_idx)
+        except Exception:
+            pass
 
     def _show_empty_articles_state(self) -> None:
         try:

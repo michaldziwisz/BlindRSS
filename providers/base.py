@@ -119,3 +119,10 @@ class RSSProvider(abc.ABC):
     # Optional: providers can implement chapter fetching for specific articles.
     def get_article_chapters(self, article_id: str) -> List[Dict]:
         return utils.get_chapters_from_db(article_id)
+
+    # Optional: providers can implement article deletion.
+    def supports_article_delete(self) -> bool:
+        return False
+
+    def delete_article(self, article_id: str) -> bool:
+        return False

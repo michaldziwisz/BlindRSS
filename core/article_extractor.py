@@ -9,6 +9,7 @@ Goal:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import logging
@@ -78,6 +79,9 @@ _META_TITLE_TAG_ATTRS: List[dict] = [
     {"name": "twitter:title"},
     {"name": "title"},
 ]
+
+_JSON_LD_TEXT_FIELDS = ("articleBody", "text")
+_JSON_LD_MIN_TEXT_LEN = 120
 
 
 def _lead_recovery_enabled(url: str) -> bool:
@@ -196,6 +200,61 @@ def _extract_page_title(*, html: Optional[str] = None, soup: Optional[BeautifulS
     if t and t.get_text(strip=True):
         return t.get_text(strip=True)
     return ""
+
+
+def _collect_json_ld_text(obj, out: List[str]) -> None:
+    if isinstance(obj, dict):
+        for key in _JSON_LD_TEXT_FIELDS:
+            val = obj.get(key)
+            if isinstance(val, str):
+                out.append(val)
+            elif isinstance(val, list):
+                joined = " ".join(v for v in val if isinstance(v, str))
+                if joined:
+                    out.append(joined)
+        for v in obj.values():
+            _collect_json_ld_text(v, out)
+        return
+    if isinstance(obj, list):
+        for v in obj:
+            _collect_json_ld_text(v, out)
+
+
+def _extract_json_ld_text(html: str) -> str:
+    if not html:
+        return ""
+    soup = _parse_html_soup(html, context="json-ld")
+    if soup is None:
+        return ""
+
+    candidates: List[str] = []
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = tag.string or tag.get_text(strip=True)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        _collect_json_ld_text(data, candidates)
+
+    if not candidates:
+        return ""
+
+    cleaned: List[str] = []
+    for c in candidates:
+        t = _normalize_whitespace(c)
+        if t:
+            cleaned.append(t)
+
+    if not cleaned:
+        return ""
+
+    cleaned.sort(key=len, reverse=True)
+    best = cleaned[0]
+    if len(best) < _JSON_LD_MIN_TEXT_LEN:
+        return ""
+    return best
 
 
 def _extract_allowlisted_lead_from_html(soup: BeautifulSoup, url: str) -> str:
@@ -515,6 +574,17 @@ def _soup_extract_text(html: str) -> str:
 
 def _extract_text_any(html: str, url: str = "") -> str:
     txt = _trafilatura_extract_text(html, url=url)
+    json_txt = _extract_json_ld_text(html)
+
+    if txt and json_txt:
+        txt_norm = _normalize_whitespace(txt)
+        json_norm = _normalize_whitespace(json_txt)
+        if len(json_norm) > len(txt_norm) * 1.1:
+            return json_norm
+        return txt_norm
+
+    if json_txt:
+        return _normalize_whitespace(json_txt)
     if txt:
         return _normalize_whitespace(txt)
     txt = _soup_extract_text(html)

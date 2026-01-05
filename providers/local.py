@@ -846,6 +846,9 @@ class LocalProvider(RSSProvider):
     def supports_favorites(self) -> bool:
         return True
 
+    def supports_article_delete(self) -> bool:
+        return True
+
     def toggle_favorite(self, article_id: str):
         conn = get_connection()
         try:
@@ -871,6 +874,20 @@ class LocalProvider(RSSProvider):
             c.execute("UPDATE articles SET is_favorite = ? WHERE id = ?", (1 if is_favorite else 0, article_id))
             conn.commit()
             return True
+        finally:
+            conn.close()
+
+    def delete_article(self, article_id: str) -> bool:
+        if not article_id:
+            return False
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("DELETE FROM chapters WHERE article_id = ?", (article_id,))
+            c.execute("DELETE FROM articles WHERE id = ?", (article_id,))
+            deleted = int(c.rowcount or 0)
+            conn.commit()
+            return deleted > 0
         finally:
             conn.close()
 
