@@ -223,7 +223,7 @@ class MainFrame(wx.Frame):
 
             self.list_ctrl.Freeze()
             for i, article in enumerate(self.current_articles):
-                idx = self.list_ctrl.InsertItem(i, article.title)
+                idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
                 self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
                 self.list_ctrl.SetItem(idx, 2, article.author or "")
             self.list_ctrl.Thaw()
@@ -718,6 +718,23 @@ class MainFrame(wx.Frame):
     def _is_favorites_view(self, view_id: str) -> bool:
         view_id = view_id or ""
         return view_id.startswith("favorites:") or view_id.startswith("fav:")
+
+    def _get_display_title(self, article) -> str:
+        """Return title to display in list. For aggregate views, append feed title."""
+        title = article.title or ""
+        fid = getattr(self, "current_feed_id", None)
+        
+        # Check if current view is an aggregate (All, Unread, Favorites)
+        is_aggregate = False
+        if not fid or fid == "all" or fid.startswith("unread:") or fid.startswith("read:") or fid.startswith("favorites:") or fid.startswith("fav:"):
+            is_aggregate = True
+            
+        if is_aggregate and article.feed_id:
+            feed = self.feed_map.get(article.feed_id)
+            if feed and feed.title:
+                return f"{title} - {feed.title}"
+        
+        return title
 
     def _sync_favorite_flag_in_cached_views(self, article_id: str, is_favorite: bool) -> None:
         try:
@@ -1391,7 +1408,7 @@ class MainFrame(wx.Frame):
 
         self.list_ctrl.Freeze()
         for i, article in enumerate(self.current_articles):
-            idx = self.list_ctrl.InsertItem(i, article.title)
+            idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
             self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
             self.list_ctrl.SetItem(idx, 2, article.author or '')
             self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")
@@ -1474,7 +1491,7 @@ class MainFrame(wx.Frame):
         self.list_ctrl.Freeze()
         self.list_ctrl.DeleteAllItems()
         for i, article in enumerate(self.current_articles):
-            idx = self.list_ctrl.InsertItem(i, article.title)
+            idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
             self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
             self.list_ctrl.SetItem(idx, 2, article.author or '')
             self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")
@@ -1672,7 +1689,7 @@ class MainFrame(wx.Frame):
             self.list_ctrl.Freeze()
             self.list_ctrl.DeleteAllItems()
             for i, article in enumerate(self.current_articles):
-                idx = self.list_ctrl.InsertItem(i, article.title)
+                idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
                 self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
                 self.list_ctrl.SetItem(idx, 2, article.author or "")
                 self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")

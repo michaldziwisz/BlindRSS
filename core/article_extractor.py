@@ -778,6 +778,12 @@ def render_full_article(
             return _render(art)
         return None
 
+    # Optimization: prefer feed content for known sites or if it looks complete
+    if _should_prefer_feed_content(url, fallback_html):
+        art = extract_from_html(fallback_html, url, title=fallback_title, author=fallback_author)
+        if art:
+            return _render(art)
+
     # Try webpage extraction.
     try:
         art = extract_full_article(url, max_pages=max_pages, timeout=timeout)
@@ -795,3 +801,27 @@ def render_full_article(
         return _render(art)
 
     raise ExtractionError("Could not extract full text from the webpage or from feed content.")
+
+
+def _should_prefer_feed_content(url: str, html: str) -> bool:
+    """Return True if we should use the feed content instead of scraping."""
+    if not html:
+        return False
+    
+    # 1. Known sites where scraping is slow/blocked but feed is good
+    try:
+        host = urlsplit(url).hostname
+        if host:
+            host = host.lower()
+            if host == "wired.com" or host.endswith(".wired.com"):
+                # Wired feeds are usually decent summaries or full text
+                if len(html) > 300:
+                    return True
+    except Exception:
+        pass
+
+    # 2. General heuristic: if the feed content is very long, it's likely full text.
+    if len(html) > 2500:
+        return True
+    
+    return False

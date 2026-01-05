@@ -507,6 +507,26 @@ class LocalProvider(RSSProvider):
                                 media_url = enc_href
                                 media_type = enc_type or "audio/mpeg"
 
+                    # 3. Check media:content (common in RSS 2.0 / MRSS)
+                    if not media_url and 'media_content' in entry:
+                        for mc in entry.media_content:
+                            mc_url = mc.get('url')
+                            mc_type = mc.get('type')
+                            if mc_url:
+                                # Skip thumbnails or images
+                                if mc_type and mc_type.startswith('image/'):
+                                    continue
+                                if any(mc_url.lower().endswith(ext) for ext in image_exts):
+                                    continue
+                                
+                                # Accept if audio/video or looks like audio
+                                audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
+                                if (mc_type and (mc_type.startswith('audio/') or mc_type.startswith('video/'))) or \
+                                   mc_url.lower().endswith(audio_exts):
+                                    media_url = mc_url
+                                    media_type = mc_type or "audio/mpeg"
+                                    break
+
                     c.execute("INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                                 (article_id, feed_id, title, url, content, date, author, media_url, media_type))
                     new_items += 1
