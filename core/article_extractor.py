@@ -85,9 +85,9 @@ def _lead_recovery_enabled(url: str) -> bool:
         return False
     try:
         host = urlsplit(url).hostname
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return False
-    if not host:
+    if not host or not isinstance(host, str):
         return False
     host = host.lower()
     return any(host == d or host.endswith("." + d) for d in _LEAD_RECOVERY_ALLOWED_NETLOC_SUFFIXES)
@@ -256,11 +256,7 @@ def _attempt_lead_recovery(
     page_title = _strip_title_suffix(_extract_page_title(soup=soup))
     page_title_norm = _normalize_for_match(page_title)
 
-    precision_paras_norm: Set[str] = set()
-    for p in _split_paragraphs(precision_text):
-        pn = _normalize_for_match(p)
-        if pn:
-            precision_paras_norm.add(pn)
+    precision_paras_norm = {_normalize_for_match(p) for p in _split_paragraphs(precision_text)}
 
     intro = _recover_intro_paragraphs(
         rec,
