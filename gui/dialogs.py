@@ -204,11 +204,15 @@ class SettingsDialog(wx.Dialog):
         general_sizer.Add(self.close_tray_chk, 0, wx.ALL, 5)
         
         self.min_tray_chk = wx.CheckBox(general_panel, label="Minimize to Tray")
-        self.min_tray_chk.SetValue(config.get("minimize_to_tray", True))
+        self.min_tray_chk.SetValue(config.get("minimize_to_tray", True))        
         general_sizer.Add(self.min_tray_chk, 0, wx.ALL, 5)
 
+        self.start_maximized_chk = wx.CheckBox(general_panel, label="Always start maximized")
+        self.start_maximized_chk.SetValue(bool(config.get("start_maximized", False)))
+        general_sizer.Add(self.start_maximized_chk, 0, wx.ALL, 5)
+
         self.debug_mode_chk = wx.CheckBox(general_panel, label="Debug mode (show console on startup)")
-        self.debug_mode_chk.SetValue(bool(config.get("debug_mode", False)))
+        self.debug_mode_chk.SetValue(bool(config.get("debug_mode", False)))     
         general_sizer.Add(self.debug_mode_chk, 0, wx.ALL, 5)
 
         self.auto_update_chk = wx.CheckBox(general_panel, label="Check for updates on startup")
@@ -368,6 +372,7 @@ class SettingsDialog(wx.Dialog):
             "download_retention": self.retention_ctrl.GetValue(),
             "close_to_tray": self.close_tray_chk.GetValue(),
             "minimize_to_tray": self.min_tray_chk.GetValue(),
+            "start_maximized": self.start_maximized_chk.GetValue(),
             "debug_mode": self.debug_mode_chk.GetValue(),
             "auto_check_updates": self.auto_update_chk.GetValue(),
             "active_provider": self.provider_choice.GetStringSelection(),
@@ -376,30 +381,59 @@ class SettingsDialog(wx.Dialog):
 
 
 class FeedPropertiesDialog(wx.Dialog):
-    def __init__(self, parent, feed, categories):
-        super().__init__(parent, title="Feed Properties", size=(400, 200))
-        
+    def __init__(self, parent, feed, categories, allow_url_edit: bool = True):
+        super().__init__(parent, title="Feed Properties", size=(500, 260))
+
         self.feed = feed
         self.categories = categories
-        
+
         sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        sizer.Add(wx.StaticText(self, label=f"Title: {feed.title}"), 0, wx.ALL, 5)
-        sizer.Add(wx.StaticText(self, label=f"URL: {feed.url}"), 0, wx.ALL, 5)
-        
+
+        title_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        title_sizer.Add(wx.StaticText(self, label="Title:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.title_ctrl = wx.TextCtrl(self, value=str(feed.title or ""))
+        title_sizer.Add(self.title_ctrl, 1, wx.ALL, 5)
+        sizer.Add(title_sizer, 0, wx.EXPAND)
+
+        url_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        url_sizer.Add(wx.StaticText(self, label="URL:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.url_ctrl = wx.TextCtrl(self, value=str(feed.url or ""))
+        if not bool(allow_url_edit):
+            try:
+                self.url_ctrl.SetEditable(False)
+            except Exception:
+                pass
+        url_sizer.Add(self.url_ctrl, 1, wx.ALL, 5)
+        sizer.Add(url_sizer, 0, wx.EXPAND)
+
         sizer.Add(wx.StaticText(self, label="Category:"), 0, wx.ALL, 5)
         self.cat_ctrl = wx.ComboBox(self, choices=self.categories, style=wx.CB_DROPDOWN)
         self.cat_ctrl.SetValue(feed.category or "Uncategorized")
         sizer.Add(self.cat_ctrl, 0, wx.EXPAND | wx.ALL, 5)
-        
+
         btn_sizer = self.CreateButtonSizer(wx.OK | wx.CANCEL)
         sizer.Add(btn_sizer, 0, wx.ALIGN_CENTER | wx.ALL, 5)
-        
+
         self.SetSizer(sizer)
         self.Centre()
 
-    def get_category(self):
-        return self.cat_ctrl.GetValue()
+    def get_data(self):
+        title = ""
+        url = ""
+        category = ""
+        try:
+            title = (self.title_ctrl.GetValue() or "").strip()
+        except Exception:
+            title = ""
+        try:
+            url = (self.url_ctrl.GetValue() or "").strip()
+        except Exception:
+            url = ""
+        try:
+            category = (self.cat_ctrl.GetValue() or "").strip()
+        except Exception:
+            category = ""
+        return title, url, category
 
 
 class FeedSearchDialog(wx.Dialog):

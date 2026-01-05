@@ -511,6 +511,36 @@ class MinifluxProvider(RSSProvider):
     def remove_feed(self, feed_id: str) -> bool:
         self._req("DELETE", f"/v1/feeds/{feed_id}")
         return True
+
+    def supports_feed_edit(self) -> bool:
+        return True
+
+    def supports_feed_url_update(self) -> bool:
+        return True
+
+    def update_feed(self, feed_id: str, title: str = None, url: str = None, category: str = None) -> bool:
+        payload = {}
+        if title is not None:
+            payload["title"] = title
+        if url is not None:
+            payload["feed_url"] = url
+        if category is not None:
+            cats = self._req("GET", "/v1/categories") or []
+            cat_id = None
+            for c in cats:
+                if str(c.get("title", "")).lower() == str(category).lower():
+                    cat_id = c.get("id")
+                    break
+            if cat_id is None and category:
+                created = self._req("POST", "/v1/categories", json={"title": category})
+                if isinstance(created, dict):
+                    cat_id = created.get("id")
+            if cat_id is not None:
+                payload["category_id"] = cat_id
+        if not payload:
+            return True
+        res = self._req("PUT", f"/v1/feeds/{feed_id}", json=payload)
+        return res is not None
         
     def import_opml(self, path: str, target_category: str = None) -> bool:
         # Miniflux API has an endpoint for this, but file upload might be tricky with requests.

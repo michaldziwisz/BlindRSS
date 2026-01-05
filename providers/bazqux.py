@@ -261,6 +261,41 @@ class BazQuxProvider(RSSProvider):
             log.error(f"BazQux Remove Feed Error: {e}")
             return False
 
+    def supports_feed_edit(self) -> bool:
+        return True
+
+    def supports_feed_url_update(self) -> bool:
+        return False
+
+    def update_feed(self, feed_id: str, title: str = None, url: str = None, category: str = None) -> bool:
+        if not self._login():
+            return False
+        data = {"s": feed_id, "ac": "edit"}
+        if title is not None:
+            data["t"] = title
+
+        if category is not None:
+            current_cat = None
+            try:
+                for f in self.get_feeds():
+                    if f.id == feed_id:
+                        current_cat = f.category or "Uncategorized"
+                        break
+            except Exception:
+                current_cat = None
+            if current_cat and current_cat != category:
+                if current_cat and current_cat != "Uncategorized":
+                    data["r"] = f"user/-/label/{current_cat}"
+                if category and category != "Uncategorized":
+                    data["a"] = f"user/-/label/{category}"
+
+        try:
+            resp = requests.post(f"{self.base_url}/subscription/edit", headers=self._headers(), data=data)
+            return resp.ok
+        except Exception as e:
+            log.error(f"BazQux Update Feed Error: {e}")
+            return False
+
     def get_categories(self) -> List[str]:
         if not self._login(): return []
         try:

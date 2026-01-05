@@ -42,6 +42,7 @@ DEFAULT_CONFIG = {
     "silence_skip_retrigger_backoff_ms": 1400,
     "close_to_tray": True,
     "minimize_to_tray": True,
+    "start_maximized": False,
     "max_cached_views": 15,
     "playback_speed": 1.0,
     "volume": 100,

@@ -938,6 +938,43 @@ class LocalProvider(RSSProvider):
         finally:
             conn.close()
 
+    def supports_feed_edit(self) -> bool:
+        return True
+
+    def supports_feed_url_update(self) -> bool:
+        return True
+
+    def update_feed(self, feed_id: str, title: str = None, url: str = None, category: str = None) -> bool:
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT url, title, category FROM feeds WHERE id = ?", (feed_id,))
+            row = c.fetchone()
+            if not row:
+                return False
+            cur_url, cur_title, cur_category = row[0], row[1], row[2]
+            new_url = url if url is not None else cur_url
+            new_title = title if title is not None else cur_title
+            new_category = category if category is not None else cur_category
+
+            if str(new_url or "") != str(cur_url or ""):
+                c.execute(
+                    "UPDATE feeds SET url = ?, title = ?, category = ?, etag = NULL, last_modified = NULL WHERE id = ?",
+                    (new_url, new_title, new_category, feed_id),
+                )
+            else:
+                c.execute(
+                    "UPDATE feeds SET url = ?, title = ?, category = ? WHERE id = ?",
+                    (new_url, new_title, new_category, feed_id),
+                )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error(f"Update feed error: {e}")
+            return False
+        finally:
+            conn.close()
+
     # ... import/export/category methods ...
 
     def import_opml(self, path: str, target_category: str = None) -> bool:

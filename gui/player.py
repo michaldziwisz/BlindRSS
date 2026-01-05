@@ -1418,7 +1418,7 @@ class PlayerFrame(wx.Frame):
 
         if self.is_casting:
             try:
-                start_ms = getattr(self, "_pending_resume_seek_ms", None)
+                start_ms = getattr(self, "_pending_resume_seek_ms", None)       
             except Exception:
                 start_ms = None
             if start_ms is not None and int(start_ms) > 0:
@@ -1434,6 +1434,7 @@ class PlayerFrame(wx.Frame):
                 )
             else:
                 self.casting_manager.play(final_url, self.current_title, content_type="audio/mpeg")
+            self.is_playing = True
         else:
             final_url = self._maybe_range_cache_url(final_url, headers=ytdlp_headers)
             self._last_load_chapters = chapters
@@ -1931,6 +1932,18 @@ class PlayerFrame(wx.Frame):
     def has_media_loaded(self) -> bool:
         return bool(getattr(self, "current_url", None))
 
+    def is_audio_playing(self) -> bool:
+        """Return True only when audio is actively playing."""
+        try:
+            if bool(getattr(self, "is_casting", False)):
+                return bool(getattr(self, "is_playing", False))
+            try:
+                return bool(self.player.is_playing())
+            except Exception:
+                return bool(getattr(self, "is_playing", False))
+        except Exception:
+            return False
+
     def set_volume_percent(self, percent: int, persist: bool = True) -> None:
         try:
             percent = int(percent)
@@ -2388,6 +2401,7 @@ class PlayerFrame(wx.Frame):
                 self.casting_manager.resume()
             except Exception:
                 pass
+            self.is_playing = True
         else:
             try:
                 try:
@@ -2395,6 +2409,7 @@ class PlayerFrame(wx.Frame):
                 except Exception:
                     pass
                 self.player.play()
+                self.is_playing = True
                 if not self.timer.IsRunning():
                     interval = 500
                     try:
@@ -2476,18 +2491,19 @@ class PlayerFrame(wx.Frame):
             except Exception:
                 pass
 
-        if event.ControlDown():
-            actions = {
-                wx.WXK_UP: lambda: self.adjust_volume(int(getattr(self, "volume_step", 5))),
-                wx.WXK_DOWN: lambda: self.adjust_volume(-int(getattr(self, "volume_step", 5))),
-                wx.WXK_LEFT: lambda: self.seek_relative_ms(-int(getattr(self, "seek_back_ms", 10000))),
-                wx.WXK_RIGHT: lambda: self.seek_relative_ms(int(getattr(self, "seek_forward_ms", 10000))),
-            }
-            try:
-                if getattr(self, "_media_hotkeys", None) and self._media_hotkeys.handle_ctrl_key(event, actions):
-                    return
-            except Exception:
-                pass
+        if event.ControlDown() and not event.ShiftDown() and not event.AltDown() and not event.MetaDown():
+            if self.is_audio_playing():
+                actions = {
+                    wx.WXK_UP: lambda: self.adjust_volume(int(getattr(self, "volume_step", 5))),
+                    wx.WXK_DOWN: lambda: self.adjust_volume(-int(getattr(self, "volume_step", 5))),
+                    wx.WXK_LEFT: lambda: self.seek_relative_ms(-int(getattr(self, "seek_back_ms", 10000))),
+                    wx.WXK_RIGHT: lambda: self.seek_relative_ms(int(getattr(self, "seek_forward_ms", 10000))),
+                }
+                try:
+                    if getattr(self, "_media_hotkeys", None) and self._media_hotkeys.handle_ctrl_key(event, actions):
+                        return
+                except Exception:
+                    pass
         event.Skip()
 
     def on_close(self, event):

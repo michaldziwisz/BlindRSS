@@ -9,7 +9,7 @@ import logging
 from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 # from dateutil import parser as date_parser  # Removed unused import
-from .dialogs import AddFeedDialog, SettingsDialog
+from .dialogs import AddFeedDialog, SettingsDialog, FeedPropertiesDialog
 from .player import PlayerFrame
 from .tray import BlindRSSTrayIcon
 from .hotkeys import HoldRepeatHotkeys
@@ -426,9 +426,14 @@ class MainFrame(wx.Frame):
                 self.on_delete_article()
                 return
 
-        if event.ControlDown():
+        if event.ControlDown() and not event.ShiftDown() and not event.AltDown() and not event.MetaDown():
             pw = getattr(self, "player_window", None)
-            if pw and getattr(pw, "has_media_loaded", None) and pw.has_media_loaded():
+            playing = False
+            try:
+                playing = bool(getattr(pw, "is_audio_playing", lambda: False)()) if pw else False
+            except Exception:
+                playing = False
+            if pw and playing:
                 actions = {
                     wx.WXK_UP: lambda: pw.adjust_volume(int(getattr(pw, "volume_step", 5))),
                     wx.WXK_DOWN: lambda: pw.adjust_volume(-int(getattr(pw, "volume_step", 5))),
@@ -597,14 +602,20 @@ class MainFrame(wx.Frame):
             if cat_title != "Uncategorized":
                 rename_item = menu.Append(wx.ID_ANY, "Rename Category")
                 self.Bind(wx.EVT_MENU, lambda e: self.on_rename_category(cat_title), rename_item)
-                
+
                 remove_item = menu.Append(wx.ID_ANY, "Remove Category")
                 self.Bind(wx.EVT_MENU, self.on_remove_category, remove_item)
+
+                delete_with_feeds_item = menu.Append(wx.ID_ANY, "Delete Category and Feeds")
+                self.Bind(wx.EVT_MENU, self.on_delete_category_with_feeds, delete_with_feeds_item)
             
             import_item = menu.Append(wx.ID_ANY, "Import OPML Here...")
             self.Bind(wx.EVT_MENU, lambda e: self.on_import_opml(e, target_category=cat_title), import_item)
             
         elif data["type"] == "feed":
+            edit_item = menu.Append(wx.ID_ANY, "Edit Feed...")
+            self.Bind(wx.EVT_MENU, self.on_edit_feed, edit_item)
+
             copy_url_item = menu.Append(wx.ID_ANY, "Copy Feed URL")
             self.Bind(wx.EVT_MENU, self.on_copy_feed_url, copy_url_item)
 
@@ -974,6 +985,68 @@ class MainFrame(wx.Frame):
                         wx.MessageBox("Could not remove category.", "Error", wx.ICON_ERROR)
             else:
                  wx.MessageBox("Please select a category to remove.", "Info")
+
+    def on_delete_category_with_feeds(self, event):
+        item = self.tree.GetSelection()
+        if not item or not item.IsOk():
+            return
+        data = self.tree.GetItemData(item)
+        if not data or data.get("type") != "category":
+            wx.MessageBox("Please select a category to remove.", "Info")
+            return
+
+        cat_title = data.get("id")
+        if not cat_title or str(cat_title).lower() == "uncategorized":
+            wx.MessageBox("The Uncategorized folder cannot be removed.", "Info")
+            return
+
+        feed_ids = []
+        try:
+            for fid, feed in (self.feed_map or {}).items():
+                if (feed.category or "Uncategorized") == cat_title:
+                    feed_ids.append(fid)
+        except Exception:
+            feed_ids = []
+
+        count = len(feed_ids)
+        prompt = (
+            f"Delete category '{cat_title}' and its {count} feed(s)?\n\n"
+            "This will remove the feeds and their articles."
+        )
+        if wx.MessageBox(prompt, "Confirm", wx.YES_NO | wx.ICON_WARNING) != wx.YES:
+            return
+
+        self._selection_hint = {"type": "all", "id": "all"}
+        threading.Thread(
+            target=self._delete_category_with_feeds_thread,
+            args=(cat_title, feed_ids),
+            daemon=True,
+        ).start()
+
+    def _delete_category_with_feeds_thread(self, cat_title: str, feed_ids: list[str]):
+        failed = []
+        try:
+            for fid in list(feed_ids or []):
+                try:
+                    if not self.provider.remove_feed(fid):
+                        failed.append(fid)
+                except Exception:
+                    failed.append(fid)
+            try:
+                self.provider.delete_category(cat_title)
+            except Exception:
+                pass
+        finally:
+            wx.CallAfter(self._post_delete_category_with_feeds, cat_title, failed)
+
+    def _post_delete_category_with_feeds(self, cat_title: str, failed: list[str]):
+        self.refresh_feeds()
+        if failed:
+            wx.MessageBox(
+                f"Deleted category '{cat_title}', but {len(failed)} feed(s) could not be removed.",
+                "Warning",
+                wx.ICON_WARNING,
+            )
 
     def refresh_loop(self):
         while not self.stop_event.is_set():
@@ -2119,17 +2192,31 @@ class MainFrame(wx.Frame):
             return
         if 0 <= idx < len(self.current_articles):
             article = self.current_articles[idx]
-            
+
             if self._should_play_in_player(article):
                 # Decision logic for which URL to play
                 media_url = article.media_url
-                use_ytdlp = (article.media_type or "").lower() == "video/youtube"
-                
-                # If main URL is yt-dlp supported, prefer it! 
-                # This fixes the bug where we accidentally play the thumbnail enclosure.
+                media_type = (article.media_type or "").lower()
+                use_ytdlp = media_type == "video/youtube"
+
+                is_direct_media = False
+                try:
+                    if media_url:
+                        if media_type.startswith(("audio/", "video/")) or "podcast" in media_type:
+                            is_direct_media = True
+                        else:
+                            media_path = urlsplit(str(media_url)).path.lower()
+                            if media_path.endswith((".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac", ".mp4", ".m4v", ".webm", ".mkv", ".mov")):
+                                is_direct_media = True
+                except Exception:
+                    is_direct_media = False
+
+                # If main URL is yt-dlp supported, prefer it only when we don't already
+                # have a direct audio/video enclosure (e.g., YouTube thumbnails).
                 if article.url and core.discovery.is_ytdlp_supported(article.url):
-                    media_url = article.url
-                    use_ytdlp = True
+                    if use_ytdlp or (not media_url) or (not is_direct_media):
+                        media_url = article.url
+                        use_ytdlp = True
                 elif not media_url and article.url:
                     # Fallback
                     media_url = article.url
@@ -2406,6 +2493,94 @@ class MainFrame(wx.Frame):
 
                     self.provider.remove_feed(data["id"])
                     self.refresh_feeds()
+
+    def on_edit_feed(self, event):
+        item = self.tree.GetSelection()
+        if not item or not item.IsOk():
+            return
+        data = self.tree.GetItemData(item)
+        if not data or data.get("type") != "feed":
+            return
+        feed_id = data.get("id")
+        feed = self.feed_map.get(feed_id)
+        if not feed:
+            return
+
+        try:
+            if not bool(getattr(self.provider, "supports_feed_edit", lambda: False)()):
+                wx.MessageBox("This provider does not support editing feeds.", "Not supported", wx.ICON_INFORMATION)
+                return
+        except Exception:
+            pass
+
+        cats = self.provider.get_categories() if self.provider else []
+        if not cats:
+            cats = ["Uncategorized"]
+
+        allow_url_edit = False
+        try:
+            allow_url_edit = bool(getattr(self.provider, "supports_feed_url_update", lambda: False)())
+        except Exception:
+            allow_url_edit = False
+
+        dlg = FeedPropertiesDialog(self, feed, cats, allow_url_edit=allow_url_edit)
+        try:
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+            new_title, new_url, new_cat = dlg.get_data()
+        finally:
+            dlg.Destroy()
+
+        old_title = str(getattr(feed, "title", "") or "")
+        old_url = str(getattr(feed, "url", "") or "")
+        old_cat = str(getattr(feed, "category", "") or "Uncategorized")
+
+        if not new_title:
+            new_title = old_title
+        if not new_url:
+            new_url = old_url
+        if not new_cat:
+            new_cat = old_cat
+
+        url_changed = (new_url or "") != (old_url or "")
+        if url_changed and not allow_url_edit:
+            wx.MessageBox(
+                "This provider does not support changing the feed URL.\n"
+                "The title and category will be updated, but the URL will stay the same.",
+                "Feed URL not supported",
+                wx.ICON_INFORMATION,
+            )
+            new_url = old_url
+
+        if new_title == old_title and new_url == old_url and new_cat == old_cat:
+            return
+
+        threading.Thread(
+            target=self._update_feed_thread,
+            args=(feed_id, new_title, new_url, new_cat),
+            daemon=True,
+        ).start()
+
+    def _update_feed_thread(self, feed_id: str, title: str, url: str, category: str):
+        ok = False
+        err = None
+        try:
+            updater = getattr(self.provider, "update_feed", None)
+            if callable(updater):
+                ok = bool(updater(feed_id, title=title, url=url, category=category))
+        except Exception as e:
+            err = str(e)
+            ok = False
+        wx.CallAfter(self._post_update_feed, ok, err)
+
+    def _post_update_feed(self, ok: bool, err: str | None):
+        if ok:
+            self.refresh_feeds()
+            return
+        msg = "Could not update feed."
+        if err:
+            msg = f"{msg}\n\n{err}"
+        wx.MessageBox(msg, "Error", wx.ICON_ERROR)
 
     def on_import_opml(self, event, target_category=None):
         dlg = wx.FileDialog(self, "Import OPML", wildcard="OPML files (*.opml)|*.opml", style=wx.FD_OPEN)

@@ -80,6 +80,16 @@ class RSSProvider(abc.ABC):
     @abc.abstractmethod
     def remove_feed(self, feed_id: str) -> bool:
         pass
+
+    # Optional: providers that allow editing feed metadata can override.
+    def supports_feed_edit(self) -> bool:
+        return False
+
+    def supports_feed_url_update(self) -> bool:
+        return False
+
+    def update_feed(self, feed_id: str, title: str = None, url: str = None, category: str = None) -> bool:
+        return False
         
     def import_opml(self, path: str, target_category: str = None) -> bool:
         """Default implementation using utils.parse_opml and add_feed."""

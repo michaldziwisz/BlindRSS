@@ -73,7 +73,7 @@ class GlobalMediaKeyFilter(wx.EventFilter):
             if et not in (getattr(wx, 'wxEVT_KEY_DOWN', -1), getattr(wx, 'wxEVT_CHAR_HOOK', -1), getattr(wx, 'wxEVT_CHAR', -1)):
                 return wx.EventFilter.Event_Skip
 
-            if event.ControlDown():
+            if event.ControlDown() and not event.ShiftDown() and not event.AltDown() and not event.MetaDown():
                 key = int(event.GetKeyCode())
 
                 # Ctrl+P: toggle player window
@@ -89,15 +89,20 @@ class GlobalMediaKeyFilter(wx.EventFilter):
                     # Use the same hold-to-repeat gate everywhere to avoid multi-seek bursts.
                     hk = getattr(self.frame, "_media_hotkeys", None)
                     if hk is not None:
-                        actions = {
-                            wx.WXK_UP: lambda: pw.adjust_volume(int(getattr(pw, "volume_step", 5))),
-                            wx.WXK_DOWN: lambda: pw.adjust_volume(-int(getattr(pw, "volume_step", 5))),
-                        }
-                        if getattr(pw, "has_media_loaded", lambda: False)():
-                            actions[wx.WXK_LEFT] = lambda: pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000)))
-                            actions[wx.WXK_RIGHT] = lambda: pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000)))
-                        if hk.handle_ctrl_key(event, actions):
-                            return wx.EventFilter.Event_Processed
+                        playing = False
+                        try:
+                            playing = bool(getattr(pw, "is_audio_playing", lambda: False)())
+                        except Exception:
+                            playing = False
+                        if playing:
+                            actions = {
+                                wx.WXK_UP: lambda: pw.adjust_volume(int(getattr(pw, "volume_step", 5))),
+                                wx.WXK_DOWN: lambda: pw.adjust_volume(-int(getattr(pw, "volume_step", 5))),
+                                wx.WXK_LEFT: lambda: pw.seek_relative_ms(-int(getattr(pw, "seek_back_ms", 10000))),
+                                wx.WXK_RIGHT: lambda: pw.seek_relative_ms(int(getattr(pw, "seek_forward_ms", 10000))),
+                            }
+                            if hk.handle_ctrl_key(event, actions):
+                                return wx.EventFilter.Event_Processed
         except Exception as e:
             # Suppress dead object errors during shutdown
             if "PyDeadObjectError" not in str(e):
@@ -115,6 +120,11 @@ class RSSApp(wx.App):
         
         self.frame = MainFrame(self.provider, self.config_manager)
         self.frame.Show()
+        try:
+            if bool(self.config_manager.get("start_maximized", False)):
+                self.frame.Maximize(True)
+        except Exception:
+            pass
 
         # Install a global filter so media shortcuts work everywhere (including modal dialogs)
         try:
