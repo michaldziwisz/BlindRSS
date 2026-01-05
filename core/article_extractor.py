@@ -231,17 +231,11 @@ def _attempt_lead_recovery(
     if not _lead_recovery_enabled(url):
         return None
 
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-    except Exception:
-        LOG.debug("Failed to parse HTML for lead recovery", exc_info=True)
+    soup = _parse_html_soup(html, context="lead recovery")
+    if soup is None:
         return None
 
-    try:
-        desc = _strip_trailing_ellipsis(_extract_meta_description(soup=soup))
-    except Exception:
-        LOG.debug("Failed to extract meta description for lead recovery", exc_info=True)
-        return None
+    desc = _strip_trailing_ellipsis(_extract_meta_description(soup=soup))
     desc_norm = _normalize_for_match(desc)
     if not desc_norm or len(desc_norm) < _LEAD_RECOVERY_MIN_DESC_LEN:
         return None
@@ -259,11 +253,7 @@ def _attempt_lead_recovery(
     if desc_snippet not in rec_head_norm:
         return None
 
-    try:
-        page_title = _strip_title_suffix(_extract_page_title(soup=soup))
-    except Exception:
-        LOG.debug("Failed to extract page title for lead recovery", exc_info=True)
-        page_title = ""
+    page_title = _strip_title_suffix(_extract_page_title(soup=soup))
     page_title_norm = _normalize_for_match(page_title)
 
     intro = _recover_intro_paragraphs(
