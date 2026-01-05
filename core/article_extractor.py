@@ -112,10 +112,10 @@ def _split_paragraphs(text: str) -> List[str]:
     t = _normalize_whitespace(text or "")
     if not t:
         return []
-    if "\n\n" in t:
-        return [p.strip() for p in re.split(r"\n\s*\n", t) if p.strip()]
-    # Trafilatura often emits single-newline-separated paragraphs (no blank lines).
-    return [p.strip() for p in t.split("\n") if p.strip()]
+    # Split by blank lines first (strong paragraph separator), then by single newlines.
+    # This handles mixed separators like "p1\\np2\\n\\np3" without merging p1+p2.
+    blocks = re.split(r"\n\s*\n", t)
+    return [p.strip() for block in blocks for p in block.split("\n") if p.strip()]
 
 
 def _normalize_for_match(text: str) -> str:
