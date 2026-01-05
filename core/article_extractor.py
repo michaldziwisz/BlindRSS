@@ -85,7 +85,7 @@ def _lead_recovery_enabled(url: str) -> bool:
         return False
     try:
         host = urlsplit(url).hostname
-    except (TypeError, ValueError):
+    except Exception:
         return False
     if not host:
         return False
