@@ -436,10 +436,9 @@ def _strip_thetyee_boilerplate(text: str) -> str:
     t = (text or "").strip()
     
     # 1. Top fundraising block (long text ending in 'Support Us Now')
-    # Use dotall to match across newlines.
-    # Pattern covers "Our journalism is supported..." down to "...Support Us Now"
+    # Removed ^ anchor to handle cases where title or other metadata precedes it.
     t = re.sub(
-        r"(?si)^Our\s+[Jj]ournalism\s+is\s+supported\s+by\s+(?:readers|Tyee\s+Builders)\s+like\s+you.*?\nSupport\s+Us\s+Now\s*",
+        r"(?si)Our\s+[Jj]ournalism\s+is\s+supported\s+by\s+(?:readers|Tyee\s+Builders)\s+like\s+you.*?\nSupport\s+Us\s+Now\s*",
         "",
         t,
         count=1
@@ -448,7 +447,7 @@ def _strip_thetyee_boilerplate(text: str) -> str:
     # 2. Bottom subscription/privacy footer
     # "Subscribe now... Privacy policy"
     t = re.sub(
-        r"(?si)\bSubscribe\s+now\s+Privacy\s+policy.*?Subscribe\s+now\s+Privacy\s+policy\s*$",
+        r"(?si)Subscribe\s+now\s+Privacy\s+policy.*?Subscribe\s+now\s+Privacy\s+policy\s*",
         "",
         t
     )
