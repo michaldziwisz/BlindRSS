@@ -457,6 +457,10 @@ class LocalProvider(RSSProvider):
                 
                 total_entries = len(d.entries)
                 for i, entry in enumerate(d.entries):
+                    # Shared extension filters for enclosure/media tags
+                    image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+                    audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
+
                     content = ""
                     if 'content' in entry:
                         content = entry.content[0].value
@@ -508,7 +512,6 @@ class LocalProvider(RSSProvider):
                         media_type = "video/youtube"
                     # 2. Check enclosures, but filter out common image types (thumbnails)
                     elif 'enclosures' in entry and len(entry.enclosures) > 0:
-                        image_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
                         valid_enclosure = None
                         for enc in entry.enclosures:
                             enc_href = getattr(enc, "href", None)
@@ -524,7 +527,6 @@ class LocalProvider(RSSProvider):
                         if valid_enclosure:
                             enc_type = getattr(valid_enclosure, "type", "") or ""
                             enc_href = getattr(valid_enclosure, "href", None)
-                            audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
                             if enc_type.startswith("audio/") or enc_type.startswith("video/"):
                                 media_url = enc_href
                                 media_type = enc_type
@@ -545,7 +547,6 @@ class LocalProvider(RSSProvider):
                                     continue
                                 
                                 # Accept if audio/video or looks like audio
-                                audio_exts = (".mp3", ".m4a", ".m4b", ".aac", ".ogg", ".opus", ".wav", ".flac")
                                 if (mc_type and (mc_type.startswith('audio/') or mc_type.startswith('video/'))) or \
                                    mc_url.lower().endswith(audio_exts):
                                     media_url = mc_url
