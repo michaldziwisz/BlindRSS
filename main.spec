@@ -49,6 +49,9 @@ if os.path.isfile(helper_path):
 # Add VLC plugins
 datas.append((os.path.join(vlc_path, 'plugins'), 'plugins'))
 
+# Add sounds
+datas.append((os.path.join(os.getcwd(), 'sounds'), 'sounds'))
+
 # Add VLC assets (locales, Lua scripts, HRTF data)
 for asset_dir in ('lua', 'locale', 'hrtfs'):
     asset_path = os.path.join(vlc_path, asset_dir)

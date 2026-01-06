@@ -20,7 +20,7 @@ class AddFeedDialog(wx.Dialog):
         # URL Input
         sizer.Add(wx.StaticText(self, label="Feed or Media URL:"), 0, wx.ALL, 5)
         self.url_ctrl = wx.TextCtrl(self)
-        self.url_ctrl.SetFocus()
+        wx.CallAfter(self.url_ctrl.SetFocus)
         sizer.Add(self.url_ctrl, 0, wx.EXPAND | wx.ALL, 5)
         
         # Compatibility Hint
@@ -292,6 +292,39 @@ class SettingsDialog(wx.Dialog):
         provider_panel.SetSizer(provider_sizer)
         notebook.AddPage(provider_panel, "Provider")
         
+        # Sounds Tab
+        sounds_panel = wx.Panel(notebook)
+        sounds_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        self.sounds_enabled_chk = wx.CheckBox(sounds_panel, label="Enable Sound Notifications")
+        self.sounds_enabled_chk.SetValue(config.get("sounds_enabled", True))
+        sounds_sizer.Add(self.sounds_enabled_chk, 0, wx.ALL, 5)
+        
+        def _add_sound_field(label, key):
+            s = wx.BoxSizer(wx.HORIZONTAL)
+            s.Add(wx.StaticText(sounds_panel, label=label), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+            val = config.get(key, "")
+            ctrl = wx.TextCtrl(sounds_panel, value=str(val))
+            s.Add(ctrl, 1, wx.ALL, 5)
+            browse_btn = wx.Button(sounds_panel, label="Browse...")
+            
+            def _on_browse(evt):
+                dlg = wx.FileDialog(self, f"Choose {label}", defaultFile=ctrl.GetValue(), wildcard="WAV files (*.wav)|*.wav|All files (*.*)|*.*", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST)
+                if dlg.ShowModal() == wx.ID_OK:
+                    ctrl.SetValue(dlg.GetPath())
+                dlg.Destroy()
+            
+            browse_btn.Bind(wx.EVT_BUTTON, _on_browse)
+            s.Add(browse_btn, 0, wx.ALL, 5)
+            sounds_sizer.Add(s, 0, wx.EXPAND | wx.ALL, 5)
+            return ctrl
+            
+        self.sound_complete_ctrl = _add_sound_field("Refresh Complete Sound:", "sound_refresh_complete")
+        self.sound_error_ctrl = _add_sound_field("Refresh Error Sound:", "sound_refresh_error")
+        
+        sounds_panel.SetSizer(sounds_sizer)
+        notebook.AddPage(sounds_panel, "Sounds")
+
         # Main Sizer
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         main_sizer.Add(notebook, 1, wx.EXPAND | wx.ALL, 5)
@@ -301,6 +334,8 @@ class SettingsDialog(wx.Dialog):
         
         self.SetSizer(main_sizer)
         self.Centre()
+        
+        wx.CallAfter(self.refresh_ctrl.SetFocus)
 
     def on_provider_choice(self, event):
         self._update_provider_panels()
@@ -375,6 +410,9 @@ class SettingsDialog(wx.Dialog):
             "start_maximized": self.start_maximized_chk.GetValue(),
             "debug_mode": self.debug_mode_chk.GetValue(),
             "auto_check_updates": self.auto_update_chk.GetValue(),
+            "sounds_enabled": self.sounds_enabled_chk.GetValue(),
+            "sound_refresh_complete": self.sound_complete_ctrl.GetValue(),
+            "sound_refresh_error": self.sound_error_ctrl.GetValue(),
             "active_provider": self.provider_choice.GetStringSelection(),
             "providers": providers,
         }
@@ -452,7 +490,7 @@ class FeedSearchDialog(wx.Dialog):
         
         self.search_ctrl = wx.SearchCtrl(self, style=wx.TE_PROCESS_ENTER)
         self.search_ctrl.ShowCancelButton(True)
-        self.search_ctrl.SetFocus()
+        wx.CallAfter(self.search_ctrl.SetFocus)
         input_sizer.Add(self.search_ctrl, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
         
         self.search_btn = wx.Button(self, label="Search")

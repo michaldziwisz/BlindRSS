@@ -455,6 +455,45 @@ def _strip_thetyee_boilerplate(text: str) -> str:
     return t.strip()
 
 
+def _strip_9to5mac_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)FTC:\s*We\s+use\s+income\s+earning\s+auto\s+affiliate\s+links\..*?More\.", "", text)
+    t = re.sub(r"(?i)You’re\s+reading\s+9to5Mac\s*—\s*experts\s+who\s+break\s+news.*?(?:loop\.|channel)", "", t, flags=re.DOTALL)
+    t = re.sub(r"(?i)Check\s+out\s+our\s+exclusive\s+stories,.*?(?:channel|loop\.)", "", t, flags=re.DOTALL)
+    return t
+
+def _strip_globalnews_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)^By\s+Staff\s+The\s+Canadian\s+Press", "", text, flags=re.MULTILINE)
+    t = re.sub(r"(?i)^Posted\s+\w+\s+\d+,\s+\d+\s+\d+:\d+\s+[ap]m", "", t, flags=re.MULTILINE)
+    t = re.sub(r"(?i)^\d+\s+min\s+read", "", t, flags=re.MULTILINE)
+    t = re.sub(r"(?i)If\s+you\s+get\s+Global\s+News\s+from\s+Instagram\s+or\s+Facebook.*?(?:connect\s+with\s+us\.)", "", t, flags=re.DOTALL)
+    t = re.sub(r"(?i)Hide\s+message\s+barDescrease\s+article\s+font\s+size\s*Increase\s+article\s+font\s+size", "", t)
+    return t
+
+def _strip_aljazeera_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)Published\s+On\s+\d+\s+\w+\s+\d+.*?(?:20\d\d)", "", text)
+    t = re.sub(r"(?i)Click\s+here\s+to\s+share\s+on\s+social\s+media", "", t)
+    t = re.sub(r"(?i)share\d+Save", "", t)
+    return t
+
+def _strip_bbc_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)ShareSave", "", text)
+    return t
+
+def _strip_canada_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)Advertisement\s+\d+", "", text)
+    t = re.sub(r"(?i)This\s+advertisement\s+has\s+not\s+loaded\s+yet.*?(?:continues\s+below\.)", "", t, flags=re.DOTALL)
+    t = re.sub(r"(?i)Author\s+of\s+the\s+article:.*?(?:read)", "", t, flags=re.DOTALL)
+    t = re.sub(r"(?i)Join\s+the\s+conversation", "", t)
+    t = re.sub(r"(?i)Read\s+More.*?(?:Article\s+content)", "", t, flags=re.DOTALL)
+    t = re.sub(r"(?i)Share\s+this\s+article\s+in\s+your\s+social\s+network", "", t)
+    t = re.sub(r"(?i)Trending\s+Latest\s+National\s+Stories", "", t)
+    return t
+
+def _strip_castanet_boilerplate(text: str) -> str:
+    t = re.sub(r"(?i)-\s+.*?\s+-\s+\d+:\d+\s+[ap]m", "", text)
+    return t
+
+
 def _postprocess_extracted_text(text: str, url: str) -> str:
     t = _normalize_whitespace(text or "")
     if not t:
@@ -470,6 +509,18 @@ def _postprocess_extracted_text(text: str, url: str) -> str:
         t = _strip_zdnet_recommends_block(t)
     elif netloc.endswith("thetyee.ca"):
         t = _strip_thetyee_boilerplate(t)
+    elif "9to5mac.com" in netloc:
+        t = _strip_9to5mac_boilerplate(t)
+    elif "globalnews.ca" in netloc:
+        t = _strip_globalnews_boilerplate(t)
+    elif "aljazeera.com" in netloc:
+        t = _strip_aljazeera_boilerplate(t)
+    elif "bbc.com" in netloc or "bbc.co.uk" in netloc:
+        t = _strip_bbc_boilerplate(t)
+    elif "o.canada.com" in netloc or "canada.com" in netloc:
+        t = _strip_canada_boilerplate(t)
+    elif "castanet.net" in netloc:
+        t = _strip_castanet_boilerplate(t)
 
     return _normalize_whitespace(t)
 

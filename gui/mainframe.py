@@ -560,6 +560,25 @@ class MainFrame(wx.Frame):
             return
         threading.Thread(target=self._refresh_single_feed_thread, args=(feed_id,), daemon=True).start()
 
+    def _play_sound(self, key):
+        if not self.config_manager.get("sounds_enabled", True):
+            return
+        path = self.config_manager.get(key)
+        if not path:
+            return
+        
+        # Resolve relative path
+        if not os.path.isabs(path):
+            path = os.path.join(APP_DIR, path)
+            
+        if os.path.exists(path):
+            try:
+                snd = wx.Sound(path)
+                if snd.IsOk():
+                    snd.Play(wx.SOUND_ASYNC)
+            except Exception:
+                log.exception(f"Failed to play sound: {path}")
+
     def _refresh_single_feed_thread(self, feed_id):
         try:
             # Re-use the existing progress callback mechanism
@@ -567,8 +586,10 @@ class MainFrame(wx.Frame):
             wx.CallAfter(self._flush_feed_refresh_progress) # Ensure it flushes immediately
             # We don't need to call refresh_feeds() (full tree rebuild) if we just updated one feed.
             # The progress callback updates the tree item label.
+            self._play_sound("sound_refresh_complete")
         except Exception as e:
             print(f"Single feed refresh error: {e}")
+            self._play_sound("sound_refresh_error")
 
     def _run_refresh(self, block: bool, force: bool = False) -> bool:
         """Run provider.refresh with optional blocking guard to avoid overlap."""
@@ -582,9 +603,11 @@ class MainFrame(wx.Frame):
         try:
             if self.provider.refresh(self._on_feed_refresh_progress, force=force):
                 wx.CallAfter(self.refresh_feeds)
+            self._play_sound("sound_refresh_complete")
             return True
         except Exception as e:
             print(f"Refresh error: {e}")
+            self._play_sound("sound_refresh_error")
             return False
         finally:
             try:
