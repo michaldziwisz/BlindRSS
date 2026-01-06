@@ -49,6 +49,7 @@ _DEFAULT_UA = (
 _INLINE_PREFETCH_CAP_BYTES = 16 * 1024 * 1024
 
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d+)?$")
+_CONTENT_RANGE_RE = re.compile(r"^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$", re.IGNORECASE)
 
 
 def _safe_mkdir(path: str) -> None:
@@ -122,7 +123,7 @@ def _parse_content_range(value: str) -> Optional[Tuple[int, int, Optional[int]]]
     # Example: "bytes 0-0/12345" or "bytes 0-0/*"
     if not value:
         return None
-    m = re.match(r"^\s*bytes\s+(\d+)-(\d+)/(\d+|*)\s*$", value, re.IGNORECASE)
+    m = _CONTENT_RANGE_RE.match(value)
     if not m:
         return None
     a = int(m.group(1))
@@ -761,10 +762,10 @@ class _Entry:
                             f.write(chunk)
 
                             try:
-                                self.wfile.write(chunk)
+                                wfile.write(chunk)
                                 if flush_first and first:
                                     try:
-                                        self.wfile.flush()
+                                        wfile.flush()
                                     except Exception:
                                         pass
                                     first = False
