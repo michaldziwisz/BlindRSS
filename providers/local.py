@@ -570,8 +570,10 @@ class LocalProvider(RSSProvider):
                                     break
 
                     # 4. Check NPR-specific extraction if still no media
-                    if not media_url and npr_mod.is_npr_url(url):
-                        media_url, media_type = npr_mod.extract_npr_audio(url, timeout_s=feed_timeout)
+                    # DISABLED: This causes massive slowdowns/bans on text-heavy NPR feeds (e.g. Morning Edition news feed).
+                    # Users should use the dedicated Podcast feed for audio.
+                    # if not media_url and npr_mod.is_npr_url(url):
+                    #    media_url, media_type = npr_mod.extract_npr_audio(url, timeout_s=feed_timeout)
 
                     c.execute("INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                                 (article_id, feed_id, title, url, content, date, author, media_url, media_type))
