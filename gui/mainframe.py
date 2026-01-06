@@ -574,15 +574,19 @@ class MainFrame(wx.Frame):
         
         # Resolve relative path
         if not os.path.isabs(path):
-            # Check PyInstaller bundle path first
-            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            # 1. Check user/custom path (APP_DIR/path)
+            custom_path = os.path.join(APP_DIR, path)
+            if os.path.exists(custom_path):
+                path = custom_path
+            # 2. Check PyInstaller bundle path (MEIPASS/path)
+            elif getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
                  bundled_path = os.path.join(sys._MEIPASS, path)
                  if os.path.exists(bundled_path):
                      path = bundled_path
                  else:
-                     path = os.path.join(APP_DIR, path)
+                     path = custom_path
             else:
-                path = os.path.join(APP_DIR, path)
+                path = custom_path
             
         if os.path.exists(path):
             try:

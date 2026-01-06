@@ -135,6 +135,13 @@ if exist "%OLD_DIR%\podcasts" (
     )
 )
 
+rem Restore sounds folder if exists (preserves user customizations)
+if exist "%OLD_DIR%\sounds" (
+    if not exist "%NEW_DIR%\sounds" (
+        robocopy "%OLD_DIR%\sounds" "%NEW_DIR%\sounds" /E /MOVE /R:3 /W:1 /NFL /NDL >nul 2>nul
+    )
+)
+
 :restore_done
 endlocal
 exit /b 0
@@ -183,6 +190,8 @@ for %%F in (rss.db rss.db-wal rss.db-shm rss.db-journal) do (
 )
 
 if exist "%BACKUP_DIR%\podcasts" if not exist "%INSTALL_DIR%\podcasts" set "KEEP=1"
+
+if exist "%BACKUP_DIR%\sounds" if not exist "%INSTALL_DIR%\sounds" set "KEEP=1"
 
 :keep_done
 endlocal & set "KEEP_BACKUP=%KEEP%"
