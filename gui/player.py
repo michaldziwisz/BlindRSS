@@ -1894,13 +1894,13 @@ class PlayerFrame(wx.Frame):
         try:
             self._note_user_seek()
         except Exception:
-            pass
+            log.exception("Error noting user seek on slider seek")
         # Force immediate seek on release
         self._apply_seek_time_ms(int(target_ms), force=True)
         try:
             self._schedule_resume_save_after_seek(delay_ms=400)
         except Exception:
-            pass
+            log.exception("Error scheduling resume save after slider seek")
 
     def on_rewind(self, event):
         if self.is_casting:
@@ -2028,15 +2028,15 @@ class PlayerFrame(wx.Frame):
         try:
             self._note_user_seek()
         except Exception:
-            pass
+            log.exception("Error noting user seek on chapter selection")
         try:
             self._apply_seek_time_ms(int(start_sec * 1000.0), force=True)
         except Exception:
-            pass
+            log.exception("Error applying seek on chapter selection")
         try:
             self._schedule_resume_save_after_seek(delay_ms=400)
         except Exception:
-            pass
+            log.exception("Error scheduling resume save after chapter selection")
 
     def _format_time(self, ms):
         seconds = ms // 1000
@@ -2395,7 +2395,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._note_user_seek()
         except Exception:
-            pass
+            log.exception("Error noting user seek in seek_relative_ms")
 
         now = time.monotonic()
         base = None
@@ -2518,7 +2518,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._schedule_resume_save_after_seek()
         except Exception:
-            pass
+            log.exception("Error scheduling resume save in seek_relative_ms")
 
     def play(self) -> None:
         print("DEBUG: play called")
@@ -2539,7 +2539,7 @@ class PlayerFrame(wx.Frame):
                             self._maybe_restore_playback_position(str(resume_id), getattr(self, "current_title", None))
                     self._stopped_needs_resume = False
                 except Exception:
-                    pass
+                    log.exception("Error handling resume on play")
 
                 try:
                     self.player.set_pause(0)
@@ -2552,7 +2552,7 @@ class PlayerFrame(wx.Frame):
                     try:
                         if getattr(self, "_pending_resume_seek_ms", None) is not None:
                             interval = 250
-                        if bool(self.config_manager.get("skip_silence", False)):
+                        elif bool(self.config_manager.get("skip_silence", False)):
                             interval = 250
                     except Exception:
                         interval = 500
@@ -2589,20 +2589,20 @@ class PlayerFrame(wx.Frame):
         try:
             self._persist_playback_position(force=True)
         except Exception:
-            pass
+            log.exception("Failed to persist playback position on stop")
         try:
             self._cancel_scheduled_resume_save()
         except Exception:
-            pass
+            log.exception("Error canceling scheduled resume save on stop")
         try:
             if getattr(self, "_seek_apply_calllater", None) is not None:
                 try:
                     self._seek_apply_calllater.Stop()
                 except Exception:
-                    pass
+                    log.exception("Error stopping seek apply calllater on stop")
                 self._seek_apply_calllater = None
         except Exception:
-            pass
+            log.exception("Error handling seek apply calllater on stop")
         if self.is_casting:
             try:
                 self.casting_manager.stop_playback()
@@ -2631,7 +2631,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._stopped_needs_resume = True
         except Exception:
-            pass
+            log.exception("Error setting _stopped_needs_resume on stop")
 
     def on_char_hook(self, event: wx.KeyEvent) -> None:
         try:
@@ -2666,7 +2666,7 @@ class PlayerFrame(wx.Frame):
         try:
             self.shutdown()
         except Exception:
-            pass
+            log.exception("Error during player shutdown")
         try:
             self.Hide()
         except Exception:
@@ -2684,12 +2684,12 @@ class PlayerFrame(wx.Frame):
         try:
             self._persist_playback_position(force=True)
         except Exception:
-            pass
+            log.exception("Failed to persist playback position during shutdown")
 
         try:
             self._cancel_scheduled_resume_save()
         except Exception:
-            pass
+            log.exception("Error canceling scheduled resume save during shutdown")
 
         try:
             calllater = getattr(self, "_seek_apply_calllater", None)
@@ -2721,7 +2721,7 @@ class PlayerFrame(wx.Frame):
         try:
             self.timer.Stop()
         except Exception:
-            pass
+            log.exception("Error stopping timer during shutdown")
 
         try:
             if bool(getattr(self, "is_casting", False)):
@@ -2756,10 +2756,10 @@ class PlayerFrame(wx.Frame):
             if getattr(self, "casting_manager", None) is not None:
                 self.casting_manager.stop()
         except Exception:
-            pass
+            log.exception("Error stopping casting manager during shutdown")
 
         try:
             if getattr(self, "_media_hotkeys", None):
                 self._media_hotkeys.stop()
         except Exception:
-            pass
+            log.exception("Error stopping media hotkeys during shutdown")
