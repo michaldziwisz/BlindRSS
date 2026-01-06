@@ -542,6 +542,11 @@ class MainFrame(wx.Frame):
 
         # Close player window cleanly
         if self.player_window:
+            try:
+                if hasattr(self.player_window, "shutdown"):
+                    self.player_window.shutdown()
+            except Exception:
+                pass
             self.player_window.Destroy()
         try:
             if getattr(self, "_media_hotkeys", None):
