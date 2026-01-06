@@ -403,19 +403,23 @@ class PlayerFrame(wx.Frame):
         finally:
             self._resume_seek_save_id = None
 
+    def _reset_auto_resume_state(self) -> None:
+        """Resets all state related to an in-progress auto-resume seek."""
+        self._pending_resume_seek_ms = None
+        self._pending_resume_seek_attempts = 0
+        self._pending_resume_paused = False
+        self._resume_restore_inflight = False
+        self._resume_restore_id = None
+        self._resume_restore_target_ms = None
+        self._resume_restore_attempts = 0
+        self._resume_restore_last_attempt_ts = 0.0
+
     def _note_user_seek(self) -> None:
         try:
             self._stopped_needs_resume = False
             # User-initiated seeks should override any pending auto-resume seek.
             if getattr(self, "_resume_restore_inflight", False) and getattr(self, "_pending_resume_seek_ms", None) is not None:
-                self._pending_resume_seek_ms = None
-                self._pending_resume_seek_attempts = 0
-                self._pending_resume_paused = False
-                self._resume_restore_inflight = False
-                self._resume_restore_id = None
-                self._resume_restore_target_ms = None
-                self._resume_restore_attempts = 0
-                self._resume_restore_last_attempt_ts = 0.0
+                self._reset_auto_resume_state()
         except Exception:
             log.exception("Error resetting resume state on user seek")
 
@@ -2555,9 +2559,7 @@ class PlayerFrame(wx.Frame):
                 if not self.timer.IsRunning():
                     interval = 500
                     try:
-                        if getattr(self, "_pending_resume_seek_ms", None) is not None:
-                            interval = 250
-                        elif bool(self.config_manager.get("skip_silence", False)):
+                        if getattr(self, "_pending_resume_seek_ms", None) is not None or bool(self.config_manager.get("skip_silence", False)):
                             interval = 250
                     except Exception:
                         interval = 500
@@ -2695,18 +2697,15 @@ class PlayerFrame(wx.Frame):
         except Exception:
             log.exception("Error stopping timer during shutdown")
 
-        try:
-            if bool(getattr(self, "is_casting", False)):
-                try:
-                    self.casting_manager.stop_playback()
-                except Exception:
-                    log.exception("Error stopping casting playback during shutdown")
-                try:
-                    self.casting_manager.disconnect()
-                except Exception:
-                    log.exception("Error disconnecting from cast device during shutdown")
-        except Exception:
-            log.exception("Error during casting shutdown")
+        if bool(getattr(self, "is_casting", False)):
+            try:
+                self.casting_manager.stop_playback()
+            except Exception:
+                log.exception("Error stopping casting playback during shutdown")
+            try:
+                self.casting_manager.disconnect()
+            except Exception:
+                log.exception("Error disconnecting from cast device during shutdown")
 
         if getattr(self, "player", None) is not None:
             try:
