@@ -52,7 +52,7 @@ DEFAULT_CONFIG = {
     "resume_playback": True,
     "resume_save_interval_s": 15,
     "resume_back_ms": 10000,
-    "resume_min_ms": 20000,
+    "resume_min_ms": 0,
     "resume_complete_threshold_ms": 60000,
     "show_player_on_play": False,
     "vlc_network_caching_ms": 1000,
@@ -100,6 +100,11 @@ class ConfigManager:
     def __init__(self):
         self._lock = threading.Lock()
         self.config = self.load_config()
+        try:
+            if self._apply_migrations():
+                self.save_config()
+        except Exception:
+            log.exception("Failed to apply config migrations")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -129,6 +134,30 @@ class ConfigManager:
         merged = cfg if isinstance(cfg, dict) else {}
         merge(DEFAULT_CONFIG, merged)
         return merged
+
+    def _apply_migrations(self) -> bool:
+        """
+        Apply in-place migrations for older config.json files.
+
+        Returns True if any changes were made.
+        """
+        cfg = self.config
+        if not isinstance(cfg, dict):
+            return False
+
+        changed = False
+
+        # v1.49.x: resume_min_ms default changed from 20000ms -> 0ms.
+        # Migrate old default values so users get consistent behavior after upgrade.
+        try:
+            resume_min_ms = cfg.get("resume_min_ms", None)
+            if resume_min_ms is not None and int(resume_min_ms) == 20000:
+                cfg["resume_min_ms"] = 0
+                changed = True
+        except (TypeError, ValueError):
+            log.warning("Could not migrate 'resume_min_ms' due to invalid value in config.json; leaving it as is.")
+
+        return bool(changed)
 
     def save_config(self):
         try:
