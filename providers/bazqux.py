@@ -183,6 +183,18 @@ class BazQuxProvider(RSSProvider):
             log.error(f"BazQux Mark Read Error: {e}")
             return False
 
+    def mark_unread(self, article_id: str) -> bool:
+        if not self._login(): return False
+        try:
+            requests.post(f"{self.base_url}/edit-tag", headers=self._headers(), data={
+                "i": article_id,
+                "r": "user/-/state/com.google/read"
+            })
+            return True
+        except Exception as e:
+            log.error(f"BazQux Mark Unread Error: {e}")
+            return False
+
     def supports_favorites(self) -> bool:
         return True
 

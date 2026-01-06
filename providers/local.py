@@ -398,14 +398,15 @@ class LocalProvider(RSSProvider):
                             new_last_modified = last_modified
                             break
                         resp.raise_for_status()
-                        xml_text = resp.text
+                        # Use content instead of text to let feedparser handle encoding detection
+                        xml_data = resp.content
                         new_etag = resp.headers.get('ETag')
                         new_last_modified = resp.headers.get('Last-Modified')
                         break
                     except Exception as e:
                         last_exc = e
                         status = "error"
-                        error_msg = str(e)
+                        error_msg = f"HTTP {getattr(e.response, 'status_code', 'Error')}: {str(e)}"
                         if attempt <= retries:
                             backoff = min(4, attempt)  # simple backoff
                             time.sleep(backoff)
@@ -414,10 +415,10 @@ class LocalProvider(RSSProvider):
 
             if status == "not_modified":
                 return
-            if xml_text is None:
+            if xml_data is None:
                 return
 
-            d = feedparser.parse(xml_text)
+            d = feedparser.parse(xml_data)
             
             # Build chapter map
             chapter_map = {}
@@ -884,6 +885,16 @@ class LocalProvider(RSSProvider):
         try:
             c = conn.cursor()
             c.execute("UPDATE articles SET is_read = 1 WHERE id = ?", (article_id,))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def mark_unread(self, article_id: str) -> bool:
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("UPDATE articles SET is_read = 0 WHERE id = ?", (article_id,))
             conn.commit()
             return True
         finally:

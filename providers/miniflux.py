@@ -444,6 +444,10 @@ class MinifluxProvider(RSSProvider):
         self._req("PUT", "/v1/entries", json={"entry_ids": [int(article_id)], "status": "read"})
         return True
 
+    def mark_unread(self, article_id: str) -> bool:
+        self._req("PUT", "/v1/entries", json={"entry_ids": [int(article_id)], "status": "unread"})
+        return True
+
     def supports_favorites(self) -> bool:
         return True
 

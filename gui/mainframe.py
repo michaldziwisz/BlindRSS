@@ -462,6 +462,18 @@ class MainFrame(wx.Frame):
                 self.on_delete_article()
                 return
 
+        if key == ord('M') or key == ord('m'):
+            focus = wx.Window.FindFocus()
+            if focus == getattr(self, "list_ctrl", None):
+                idx = self.list_ctrl.GetFirstSelected()
+                if idx != wx.NOT_FOUND and 0 <= idx < len(self.current_articles):
+                    article = self.current_articles[idx]
+                    if article.is_read:
+                        self.mark_article_unread(idx)
+                    else:
+                        self.mark_article_read(idx)
+                return
+
         if event.ControlDown() and not event.ShiftDown() and not event.AltDown() and not event.MetaDown():
             pw = getattr(self, "player_window", None)
             playing = False
@@ -709,6 +721,10 @@ class MainFrame(wx.Frame):
 
         menu = wx.Menu()
         open_item = menu.Append(wx.ID_ANY, "Open Article")
+        menu.AppendSeparator()
+        mark_read_item = menu.Append(wx.ID_ANY, "Mark as Read\tM")
+        mark_unread_item = menu.Append(wx.ID_ANY, "Mark as Unread")
+        menu.AppendSeparator()
         copy_item = menu.Append(wx.ID_ANY, "Copy Link")
         delete_item = None
         download_item = None
@@ -730,6 +746,8 @@ class MainFrame(wx.Frame):
         # on_article_activate (event) needs an event object, but I can re-create one or just call its core logic
         # For simplicity, pass idx to lambda
         self.Bind(wx.EVT_MENU, lambda e: self.on_article_activate(event=wx.ListEvent(wx.EVT_LIST_ITEM_ACTIVATED.type, self.list_ctrl.GetId(), idx=idx)), open_item)
+        self.Bind(wx.EVT_MENU, lambda e: self.mark_article_read(idx), mark_read_item)
+        self.Bind(wx.EVT_MENU, lambda e: self.mark_article_unread(idx), mark_unread_item)
         self.Bind(wx.EVT_MENU, lambda e: self.on_copy_link(idx), copy_item)
         if delete_item:
             self.Bind(wx.EVT_MENU, lambda e: self.on_delete_article(), delete_item)
@@ -1866,17 +1884,6 @@ class MainFrame(wx.Frame):
         except Exception:
             pass
         
-        # Mark read in background
-        if not article.is_read:
-            threading.Thread(target=self.provider.mark_read, args=(article.id,), daemon=True).start()
-            article.is_read = True
-        
-        # Schedule full-text extraction
-        try:
-            self._schedule_fulltext_load_for_index(idx, force=False)
-        except Exception:
-            pass
-
         # Fetch chapters
         try:
             self._schedule_chapters_load(article)
@@ -1899,6 +1906,7 @@ class MainFrame(wx.Frame):
         if idx is None or idx < 0 or idx >= len(self.current_articles):
             return
 
+        self.mark_article_read(idx)
         try:
             self._schedule_fulltext_load_for_index(idx, force=True)
         except Exception:
@@ -2262,6 +2270,24 @@ class MainFrame(wx.Frame):
         except Exception:
             pass
 
+    def mark_article_read(self, idx):
+        if idx < 0 or idx >= len(self.current_articles):
+            return
+        article = self.current_articles[idx]
+        if not article.is_read:
+            threading.Thread(target=self.provider.mark_read, args=(article.id,), daemon=True).start()
+            article.is_read = True
+            self.list_ctrl.SetItem(idx, 3, "Read")
+
+    def mark_article_unread(self, idx):
+        if idx < 0 or idx >= len(self.current_articles):
+            return
+        article = self.current_articles[idx]
+        if article.is_read:
+            threading.Thread(target=self.provider.mark_unread, args=(article.id,), daemon=True).start()
+            article.is_read = False
+            self.list_ctrl.SetItem(idx, 3, "Unread")
+
     def on_article_activate(self, event):
         # Double click or Enter
         idx = event.GetIndex()
@@ -2270,6 +2296,7 @@ class MainFrame(wx.Frame):
             return
         if 0 <= idx < len(self.current_articles):
             article = self.current_articles[idx]
+            self.mark_article_read(idx)
 
             if self._should_play_in_player(article):
                 # Decision logic for which URL to play

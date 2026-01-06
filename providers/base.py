@@ -72,6 +72,10 @@ class RSSProvider(abc.ABC):
     def mark_read(self, article_id: str) -> bool:
         pass
 
+    @abc.abstractmethod
+    def mark_unread(self, article_id: str) -> bool:
+        pass
+
     def mark_read_batch(self, article_ids: List[str]) -> bool:
         """Default implementation: loop over single mark_read."""
         success = True

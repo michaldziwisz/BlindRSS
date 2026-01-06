@@ -240,6 +240,17 @@ class TheOldReaderProvider(RSSProvider):
         except:
             return False
 
+    def mark_unread(self, article_id: str) -> bool:
+        if not self._login(): return False
+        try:
+            requests.post(f"{self.base_url}/edit-tag", headers=self._headers(), data={
+                "i": article_id,
+                "r": "user/-/state/com.google/read"
+            })
+            return True
+        except:
+            return False
+
     def supports_favorites(self) -> bool:
         return True
 
