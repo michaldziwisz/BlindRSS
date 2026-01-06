@@ -397,7 +397,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._stopped_needs_resume = False
         except Exception:
-            pass
+            log.exception("Failed to reset _stopped_needs_resume flag")
 
         # User-initiated seeks should override any pending auto-resume seek.
         if getattr(self, "_resume_restore_inflight", False) and getattr(self, "_pending_resume_seek_ms", None) is not None:
@@ -439,6 +439,7 @@ class PlayerFrame(wx.Frame):
                 else:
                     pos_ms = int(self._current_position_ms())
             except Exception:
+                log.exception("Failed to get position in scheduled resume save tick")
                 return
 
             if pos_ms < 1000:
@@ -452,6 +453,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._resume_seek_save_calllater = wx.CallLater(int(delay), _tick)
         except Exception:
+            log.exception("Failed to schedule resume save")
             self._resume_seek_save_calllater = None
 
     def _maybe_restore_playback_position(self, resume_id: str, title: str | None) -> None:
@@ -1333,7 +1335,7 @@ class PlayerFrame(wx.Frame):
         try:
             self._persist_playback_position(force=True)
         except Exception:
-            pass
+            log.exception("Failed to persist playback position on media load")
         try:
             self._cancel_scheduled_resume_save()
             if getattr(self, "_seek_apply_calllater", None) is not None:
@@ -2679,7 +2681,7 @@ class PlayerFrame(wx.Frame):
                 return
             self._shutdown_done = True
         except Exception:
-            pass
+            log.exception("Failed to set shutdown flag")
 
         try:
             self._persist_playback_position(force=True)
@@ -2700,7 +2702,7 @@ class PlayerFrame(wx.Frame):
                     log.exception("Error stopping seek apply calllater")
                 self._seek_apply_calllater = None
         except Exception:
-            pass
+            log.exception("Error handling seek apply calllater during shutdown")
 
         try:
             calllater = getattr(self, "_seek_guard_calllater", None)
@@ -2711,12 +2713,12 @@ class PlayerFrame(wx.Frame):
                     log.exception("Error stopping seek guard calllater")
                 self._seek_guard_calllater = None
         except Exception:
-            pass
+            log.exception("Error handling seek guard calllater during shutdown")
 
         try:
             self._cancel_silence_scan()
         except Exception:
-            pass
+            log.exception("Error canceling silence scan during shutdown")
 
         try:
             self.timer.Stop()
