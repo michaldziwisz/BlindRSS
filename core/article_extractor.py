@@ -531,6 +531,10 @@ def _strip_androidauthority_boilerplate(text: str) -> str:
     """Remove common Android Authority boilerplate."""
     t = (text or "").strip()
     
+    # Remove breadcrumb/follow header
+    # e.g. "NewsAndroid GamesGamingGaming ControllerFollow"
+    t = re.sub(r"(?si)^NewsAndroid\s+Games.*?Follow\s*", "", t)
+
     # Remove "TL;DR" block (usually at the top or distinct)
     # Matches "TL;DR" header and its content paragraph(s).
     # Terminates at double newline, or specific footer, or end of string.
@@ -539,8 +543,11 @@ def _strip_androidauthority_boilerplate(text: str) -> str:
 
     # Remove "Don't want to miss..." footer
     t = re.sub(r"(?i)Don’t want to miss the best from Android Authority\?.*", "", t)
+
+    # Remove "Thank you for being part..." footer
+    t = re.sub(r"(?i)Thank you for being part of our community\.\s*Read our Comment Policy before posting\..*", "", t)
     
-    return t
+    return t.strip()
 
 
 def _download_html(url: str, timeout: int = 20) -> Optional[str]:
