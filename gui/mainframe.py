@@ -1,4 +1,5 @@
 import wx
+import wx.adv
 # import wx.html2 # Removed as per request
 import webbrowser
 import threading
@@ -27,7 +28,10 @@ log = logging.getLogger(__name__)
 
 class MainFrame(wx.Frame):
     def __init__(self, provider: RSSProvider, config_manager):
-        super().__init__(None, title="BlindRSS", size=(1000, 700))
+        style = wx.DEFAULT_FRAME_STYLE
+        if config_manager.get("start_maximized", False):
+            style |= wx.MAXIMIZE
+        super().__init__(None, title="BlindRSS", size=(1000, 700), style=style)
         self.provider = provider
         self.config_manager = config_manager
         self._refresh_guard = threading.Lock()
@@ -573,9 +577,9 @@ class MainFrame(wx.Frame):
             
         if os.path.exists(path):
             try:
-                snd = wx.Sound(path)
+                snd = wx.adv.Sound(path)
                 if snd.IsOk():
-                    snd.Play(wx.SOUND_ASYNC)
+                    snd.Play(wx.adv.SOUND_ASYNC)
             except Exception:
                 log.exception(f"Failed to play sound: {path}")
 

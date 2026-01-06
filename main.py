@@ -130,11 +130,6 @@ class RSSApp(wx.App):
         
         self.frame = MainFrame(self.provider, self.config_manager)
         self.frame.Show()
-        try:
-            if bool(self.config_manager.get("start_maximized", False)):
-                self.frame.Maximize(True)
-        except Exception:
-            pass
 
         # Install a global filter so media shortcuts work everywhere (including modal dialogs)
         try:
