@@ -406,7 +406,7 @@ def fetch_and_store_chapters(article_id, media_url, media_type, chapter_url=None
 
     if media_url and (media_type_l.startswith("audio/") or "podcast" in media_type_l or media_path_l.endswith(audio_exts)):
         try:
-            from mutagen.id3 import ID3, ID3Error
+            from mutagen.id3 import ID3, error as ID3Error
 
             def _read_prefix_bytes(url: str, *, headers: dict, max_bytes: int, timeout_s: int) -> bytes:
                 if max_bytes <= 0:

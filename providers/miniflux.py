@@ -201,7 +201,7 @@ class MinifluxProvider(RSSProvider):
             ))
         return articles
 
-    def refresh(self, progress_cb=None) -> bool:
+    def refresh(self, progress_cb=None, force: bool = False) -> bool:
         # Kick off a global refresh on the Miniflux server.
         self._req("PUT", "/v1/feeds/refresh")
 
