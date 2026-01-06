@@ -1,6 +1,5 @@
 import unittest
 import io
-import shutil
 import tempfile
 from urllib.parse import urlparse
 
@@ -84,8 +83,7 @@ class LocalSeekingProxyTests(unittest.TestCase):
             def close(self):
                 return None
 
-        cache_dir = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as cache_dir:
             entry = rcp._Entry(
                 url="https://example.com/audio.mp3",
                 headers={"User-Agent": "Mozilla/5.0"},
@@ -105,8 +103,6 @@ class LocalSeekingProxyTests(unittest.TestCase):
             end = entry.stream_origin_range_to_and_cache(0, 1, buf, flush_first=True)
             self.assertEqual(end, 1)
             self.assertEqual(buf.getvalue(), b"ID")
-        finally:
-            shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
