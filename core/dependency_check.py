@@ -298,84 +298,46 @@ def _winget_has_package(package_id):
         pass
     return False
 
-def ensure_media_tools():
-    """Robust detection and throttled installation of media tools."""
+def check_media_tools_status():
+    """Returns tuple (vlc_missing, ffmpeg_missing)."""
     _maybe_add_windows_path()
     
     vlc_present = has("vlc", "--version")
     if not vlc_present and os.environ.get("PYTHON_VLC_LIB_PATH"):
         if os.path.isfile(os.environ["PYTHON_VLC_LIB_PATH"]):
-            _log("VLC binary not on path, but PYTHON_VLC_LIB_PATH is set.")
             vlc_present = True
-            
-    ff_present = has("ffmpeg", "-version")
-
-    if vlc_present and ff_present:
-        _log("VLC and FFmpeg are both present.")
-        return
-
-    # Second check: maybe winget knows they are there but they aren't on path?
     if not vlc_present:
         if _winget_has_package("VideoLAN.VLC"):
             vlc_present = True
+            
+    ff_present = has("ffmpeg", "-version")
     if not ff_present:
         if _winget_has_package("Gyan.FFmpeg"):
             ff_present = True
+            
+    return (not vlc_present, not ff_present)
 
-    if vlc_present and ff_present:
-        _log("VLC and FFmpeg are present (verified via winget).")
-        _maybe_add_windows_path()
+def install_media_tools(vlc=True, ffmpeg=True):
+    """Installs missing tools via winget (Windows only)."""
+    if platform.system().lower() != "windows":
         return
 
-    # If something is still missing, throttle installation attempt
-    if not _should_check_updates("media_install"):
-        _log("Media tools missing, but installation throttle is active.")
-        return
+    common_flags = ["--accept-package-agreements", "--accept-source-agreements", "--no-upgrade", "--disable-interactivity"]
+    
+    if vlc:
+        _log("Installing VLC via winget...")
+        _run_quiet(["winget", "install", "-e", "--id", "VideoLAN.VLC"] + common_flags)
+    if ffmpeg:
+        _log("Installing FFmpeg via winget...")
+        _run_quiet(["winget", "install", "-e", "--id", "Gyan.FFmpeg"] + common_flags)
+    
+    _maybe_add_windows_path()
 
-    _log(f"Media tools missing (VLC={vlc_present}, FFmpeg={ff_present}). Attempting install...")
-    sys_name = platform.system().lower()
-    if sys_name == "windows":
-        common_flags = ["--silent", "--accept-package-agreements", "--accept-source-agreements", "--no-upgrade", "--disable-interactivity"]
-        if not vlc_present:
-            _run_quiet(["winget", "install", "-e", "--id", "VideoLAN.VLC"] + common_flags)
-        if not ff_present:
-            _run_quiet(["winget", "install", "-e", "--id", "Gyan.FFmpeg"] + common_flags)
-        _maybe_add_windows_path()
-        return
-
-    if sys_name == "darwin":
-        brew = shutil.which("brew")
-        if brew:
-            if not vlc_present: _run_quiet([brew, "install", "--cask", "vlc"])
-            if not ff_present: _run_quiet([brew, "install", "ffmpeg"])
-        return
-
-    # Linux family
-    def install_with(manager, install_cmd, update_cmd=None, pkgs=None):
-        if not pkgs: return
-        is_root = os.getuid() == 0 if hasattr(os, "getuid") else False
-        sudo = [] if is_root else ["sudo"]
-        try:
-            if update_cmd: _run_quiet(sudo + update_cmd)
-            _run_quiet(sudo + install_cmd + pkgs)
-        except Exception: pass
-
-    if shutil.which("apt-get") or shutil.which("apt"):
-        base = "apt-get" if shutil.which("apt-get") else "apt"
-        pkgs = []
-        if not vlc_present: pkgs.append("vlc")
-        if not ff_present: pkgs.append("ffmpeg")
-        if pkgs: install_with(base, [base, "install", "-y"], [base, "update"], pkgs)
-    elif shutil.which("dnf"):
-        pkgs = []
-        if not vlc_present: pkgs.append("vlc")
-        if not ff_present: pkgs.append("ffmpeg")
-        if pkgs: install_with("dnf", ["dnf", "install", "-y"], None, pkgs)
-    elif shutil.which("pacman"):
-        pkgs = []
-        if not vlc_present: pkgs.append("vlc")
-        if not ff_present: pkgs.append("ffmpeg")
-        if pkgs: install_with("pacman", ["pacman", "-S", "--noconfirm"], ["pacman", "-Sy"], pkgs)
+def ensure_media_tools():
+    """Robust detection of media tools (Path setup only)."""
+    _maybe_add_windows_path()
+    # Automatic installation has been moved to interactive prompt in GUI.
+    return
 
 def _ensure_yt_dlp_cli():
     """Throttled update/install of yt-dlp binary. Prioritizes working version."""

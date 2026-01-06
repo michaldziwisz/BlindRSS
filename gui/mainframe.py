@@ -9,7 +9,7 @@ import logging
 from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 # from dateutil import parser as date_parser  # Removed unused import
-from .dialogs import AddFeedDialog, SettingsDialog, FeedPropertiesDialog
+from .dialogs import AddFeedDialog, SettingsDialog, FeedPropertiesDialog, AboutDialog
 from .player import PlayerFrame
 from .tray import BlindRSSTrayIcon
 from .hotkeys import HoldRepeatHotkeys
@@ -18,6 +18,8 @@ from core.config import APP_DIR
 from core import utils
 from core import article_extractor
 from core import updater
+from core.version import APP_VERSION
+from core import dependency_check
 import core.discovery
 
 log = logging.getLogger(__name__)
@@ -82,6 +84,35 @@ class MainFrame(wx.Frame):
         self.refresh_feeds()
         wx.CallAfter(self._focus_default_control)
         wx.CallLater(15000, self._maybe_auto_check_updates)
+        wx.CallAfter(self._check_media_dependencies)
+
+    def _check_media_dependencies(self):
+        try:
+            missing_vlc, missing_ffmpeg = dependency_check.check_media_tools_status()
+            if missing_vlc or missing_ffmpeg:
+                msg = "Missing recommended media tools:\n"
+                if missing_vlc: msg += "- VLC Media Player (required for playback)\n"
+                if missing_ffmpeg: msg += "- FFmpeg (required for some podcasts)\n"
+                msg += "\nWould you like to install them automatically (via winget) and add them to PATH?"
+                
+                if wx.MessageBox(msg, "Install Dependencies", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
+                    self.SetStatusText("Installing dependencies...")
+                    # Run in thread to avoid freezing
+                    threading.Thread(target=self._install_dependencies_thread, args=(missing_vlc, missing_ffmpeg), daemon=True).start()
+        except Exception as e:
+            log.error(f"Dependency check failed: {e}")
+
+    def _install_dependencies_thread(self, vlc, ffmpeg):
+        try:
+            dependency_check.install_media_tools(vlc=vlc, ffmpeg=ffmpeg)
+            wx.CallAfter(wx.MessageBox, "Dependencies installed. Please restart the application.", "Success", wx.ICON_INFORMATION)
+        except Exception as e:
+            wx.CallAfter(wx.MessageBox, f"Installation failed: {e}", "Error", wx.ICON_ERROR)
+
+    def on_about(self, event):
+        dlg = AboutDialog(self, APP_VERSION)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def init_ui(self):
         # Main Splitter: Tree vs Content Area
@@ -367,13 +398,17 @@ class MainFrame(wx.Frame):
         tools_menu = wx.Menu()
         find_feed_item = tools_menu.Append(wx.ID_ANY, "Find a &Podcast or RSS Feed...", "Find and add a podcast or RSS feed")
         tools_menu.AppendSeparator()
-        check_updates_item = tools_menu.Append(wx.ID_ANY, "Check for &Updates...", "Check for new versions")
         settings_item = tools_menu.Append(wx.ID_PREFERENCES, "&Settings...", "Configure application")
         
+        help_menu = wx.Menu()
+        check_updates_item = help_menu.Append(wx.ID_ANY, "Check for &Updates...", "Check for new versions")
+        about_item = help_menu.Append(wx.ID_ABOUT, "&About", "About BlindRSS")
+
         menubar.Append(file_menu, "&File")
         menubar.Append(view_menu, "&View")
         menubar.Append(player_menu, "&Player")
         menubar.Append(tools_menu, "&Tools")
+        menubar.Append(help_menu, "&Help")
         self.SetMenuBar(menubar)
         
         self.Bind(wx.EVT_MENU, self.on_add_feed, add_feed_item)
@@ -395,6 +430,7 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.on_check_updates, check_updates_item)
         self.Bind(wx.EVT_MENU, self.on_exit, exit_item)
         self.Bind(wx.EVT_MENU, self.on_find_feed, find_feed_item)
+        self.Bind(wx.EVT_MENU, self.on_about, about_item)
 
     def init_shortcuts(self):
         # Add accelerator for Ctrl+R (F5 is handled by menu item text usually, but being explicit helps)
@@ -505,7 +541,7 @@ class MainFrame(wx.Frame):
         # self.SetTitle("RSS Reader - Refreshing...") 
         threading.Thread(target=self._manual_refresh_thread, daemon=True).start()
 
-    def _run_refresh(self, block: bool) -> bool:
+    def _run_refresh(self, block: bool, force: bool = False) -> bool:
         """Run provider.refresh with optional blocking guard to avoid overlap."""
         acquired = False
         try:
@@ -515,7 +551,7 @@ class MainFrame(wx.Frame):
         if not acquired:
             return False
         try:
-            if self.provider.refresh(self._on_feed_refresh_progress):
+            if self.provider.refresh(self._on_feed_refresh_progress, force=force):
                 wx.CallAfter(self.refresh_feeds)
             return True
         except Exception as e:
@@ -529,7 +565,7 @@ class MainFrame(wx.Frame):
 
     def _manual_refresh_thread(self):
         # Manual refresh should wait for any in-flight refresh to finish.
-        ran = self._run_refresh(block=True)
+        ran = self._run_refresh(block=True, force=True)
         if not ran:
             print("Manual refresh skipped: another refresh is running.")
 

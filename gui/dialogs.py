@@ -861,5 +861,44 @@ class FeedSearchDialog(wx.Dialog):
         return None
 
 
+class AboutDialog(wx.Dialog):
+    def __init__(self, parent, version_str):
+        super().__init__(parent, title="About BlindRSS", size=(400, 300))
+
+        sizer = wx.BoxSizer(wx.VERTICAL)
+
+        # Title / Version
+        title_font = wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+        title_txt = wx.StaticText(self, label=f"BlindRSS {version_str}")
+        title_txt.SetFont(title_font)
+        sizer.Add(title_txt, 0, wx.ALIGN_CENTER | wx.TOP, 15)
+
+        # Copyright
+        copy_txt = wx.StaticText(self, label="Copyright (c) 2024-2025 serrebi and contributors")
+        sizer.Add(copy_txt, 0, wx.ALIGN_CENTER | wx.TOP, 10)
+
+        sizer.AddSpacer(20)
+
+        # Buttons
+        github_btn = wx.Button(self, label="Follow me on GitHub (@serrebi)")
+        repo_btn = wx.Button(self, label="Visit Repository")
+
+        sizer.Add(github_btn, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+        sizer.Add(repo_btn, 0, wx.ALIGN_CENTER | wx.ALL, 5)
+
+        sizer.AddSpacer(20)
+
+        close_btn = wx.Button(self, wx.ID_CLOSE, "Close")
+        sizer.Add(close_btn, 0, wx.ALIGN_CENTER | wx.BOTTOM, 15)
+
+        self.SetSizer(sizer)
+        self.Centre()
+
+        # Bindings
+        github_btn.Bind(wx.EVT_BUTTON, lambda e: webbrowser.open("https://github.com/serrebi"))
+        repo_btn.Bind(wx.EVT_BUTTON, lambda e: webbrowser.open("https://github.com/serrebi/BlindRSS"))
+        close_btn.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
+
 # Backwards-compatible name (menu item was historically called "Search Podcast").
 PodcastSearchDialog = FeedSearchDialog
+

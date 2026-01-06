@@ -37,7 +37,7 @@ class LocalProvider(RSSProvider):
     def get_name(self) -> str:
         return "Local RSS"
 
-    def refresh(self, progress_cb=None) -> bool:
+    def refresh(self, progress_cb=None, force: bool = False) -> bool:
         conn = get_connection()
         try:
             c = conn.cursor()
@@ -76,7 +76,7 @@ class LocalProvider(RSSProvider):
         host_limits = defaultdict(lambda: threading.Semaphore(per_host_limit))
 
         def task(feed_row):
-            return self._refresh_single_feed(feed_row, host_limits, feed_timeout, retries, progress_cb)
+            return self._refresh_single_feed(feed_row, host_limits, feed_timeout, retries, progress_cb, force)
 
         # Increase workers for network-bound tasks
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -88,7 +88,7 @@ class LocalProvider(RSSProvider):
                     log.error(f"Refresh worker error: {e}")
         return True
 
-    def _refresh_single_feed(self, feed_row, host_limits, feed_timeout, retries, progress_cb):
+    def _refresh_single_feed(self, feed_row, host_limits, feed_timeout, retries, progress_cb, force=False):
         # Each thread gets its own connection
         feed_id, feed_url, feed_title, feed_category, etag, last_modified = feed_row
         status = "ok"
@@ -97,8 +97,9 @@ class LocalProvider(RSSProvider):
         final_title = feed_title or "Unknown Feed"
 
         headers = {}
-        if etag: headers['If-None-Match'] = etag
-        if last_modified: headers['If-Modified-Since'] = last_modified
+        if not force:
+            if etag: headers['If-None-Match'] = etag
+            if last_modified: headers['If-Modified-Since'] = last_modified
 
         host = urlparse(feed_url).hostname or feed_url
         limiter = host_limits[host]

@@ -14,10 +14,11 @@ class RSSProvider(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def refresh(self, progress_cb=None) -> bool:
+    def refresh(self, progress_cb=None, force: bool = False) -> bool:
         """
         Triggers a sync/refresh of feeds.
         progress_cb: optional callable accepting a feed-state dict per completed feed.
+        force: if True, providers should ignore cache headers (ETag/Last-Modified) and force fetch.
         """
         pass
 

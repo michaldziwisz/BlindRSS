@@ -112,6 +112,11 @@ class GlobalMediaKeyFilter(wx.EventFilter):
 
 class RSSApp(wx.App):
     def OnInit(self):
+        self.instance_checker = wx.SingleInstanceChecker("BlindRSS-Instance-Lock")
+        if self.instance_checker.IsAnotherRunning():
+            wx.MessageBox("BlindRSS is already running.", "BlindRSS", wx.ICON_ERROR)
+            return False
+
         self.config_manager = ConfigManager()
         _enable_debug_console(self.config_manager)
         try:
@@ -151,6 +156,12 @@ class RSSApp(wx.App):
             get_range_cache_proxy().stop()
         except Exception as e:
             log.error(f"Error stopping RangeCacheProxy: {e}")
+            
+        # Release the lock implicitly by object destruction, but explicit delete is good practice
+        try:
+            del self.instance_checker
+        except Exception:
+            pass
         return 0
 
 if __name__ == "__main__":
