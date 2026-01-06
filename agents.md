@@ -32,7 +32,7 @@ You are a python expert skilled in yt-dlp, ffmpeg,  and rss.
         *   **Features:** Header forwarding (for auth/anti-hotlink), MPEG-TS to HLS remuxing via `ffmpeg` (for Chromecast compatibility), local file serving.
     *   `article_extractor.py`: **Full-Text Fetcher**.
         *   **Engine:** `trafilatura` (primary) + `BeautifulSoup` (fallback).
-        *   **Logic:** Follows pagination (`next` links), merges multi-page text, strips ZDNET-specific boilerplate.
+        *   **Logic:** Follows pagination (`next` links), merges multi-page text, strips site-specific boilerplate (e.g., ZDNET, The Tyee).
     *   `casting.py`: **Unified Casting**.
         *   **Protocols:** Chromecast (`pychromecast`), DLNA/UPnP (`async_upnp_client`), AirPlay (`pyatv`).
         *   **Manager:** Discovers devices on background thread, unifies playback/control interfaces.
@@ -109,23 +109,41 @@ You are a python expert skilled in yt-dlp, ffmpeg,  and rss.
 5.  **Naming:** App is **BlindRSS**.
 Tests scripts are in the /tests directory. Add new ones to it if you need to test something.
 
-## Build Agent
+## Build & Release Agent
 
-The Build Agent is responsible for creating redistributable packages for Windows.
+The Build Agent manages the creation of redistributable packages for Windows using `build.bat`.
 
-### Build Instructions
+### Build Modes
 
-1.  **Environment Setup**: Ensure Python 3.12+ is installed.
-2.  **VLC Requirement**: Install VLC Media Player (64-bit). The build process explicitly looks for it at `C:\ Program Files\VideoLAN\VLC\`.
-3.  **Dependency Installation**: Run `.\setup.bat` to install all Python dependencies and verify system tools.
-4.  **Compilation**: Run `.\build.bat`. This script uses PyInstaller with `main.spec` to create a directory-based distribution.
-5.  **Output**: The final build will be in `dist\BlindRSS/`. The main executable is `BlindRSS.exe`.
+1.  **Iterative Build (`.\build.bat build`)**:
+    *   **Purpose**: Local development and testing.
+    *   *   **User Data Preservation**: Automatically preserves `rss.db`, `rss.db-wal`, `rss.db-shm`, and the `podcasts/` folder from the previous `dist/` directory to `TEMP`, then restores them after the build.
+    *   **Output**: Directory distribution in `dist\BlindRSS\`. The main executable is copied to the root as `BlindRSS.exe`.
+2.  **Official Release (`.\build.bat release`)**:
+    *   **Purpose**: Production releases.
+    *   **Version Management**: Automatically bumps the version in `core/version.py` using `tools/release.py` (based on commit history analysis).
+    *   **Clean Build**: Wipes `build/` and `dist/` entirely. No user data is preserved.
+    *   **Signing**: Authenticode signs `BlindRSS.exe` using `signtool.exe` (requires Windows SDK).
+    *   **Artifacts**:
+        *   Creates a versioned ZIP: `dist\BlindRSS-vX.Y.Z.zip`.
+        *   Generates an update manifest: `dist\BlindRSS-update.json` (includes version, download URL, SHA-256 hash, and signing thumbprint).
+        *   Generates release notes in `dist\release-notes-vX.Y.Z.md`.
+    *   **Git Automation**: Commits the version bump, creates a git tag (e.g., `v1.52.1`), and pushes to origin.
+    *   **GitHub Integration**: Uses the `gh` CLI to create a GitHub release and upload the ZIP and manifest.
+3.  **Dry Run (`.\build.bat dry-run`)**:
+    *   Shows the version bump and steps that would be taken without modifying the filesystem or Git state.
 
 ### Key Build Features
 -   **No Onefile**: Uses directory mode for reliable DLL loading (especially `libvlc.dll`).
 -   **Bundled Binaries**: Includes `libvlc.dll`, `libvlccore.dll`, VLC `plugins/`, and `bin/yt-dlp.exe`.
--   **Package Collection**: Uses `collect_all` for complex dependencies like `pychromecast`, `pyatv`, and `trafilatura`.
+-   **Package Collection**: Uses `collect_all` in `main.spec` for complex dependencies like `pychromecast`, `pyatv`, and `trafilatura`.
 -   **No .conf Files**: Explicitly avoids bundling any `.conf` files.
+
+### Requirements
+-   **Python 3.12+**: Virtual environment is automatically managed by `build.bat`.
+-   **VLC Media Player (64-bit)**: Installed at `C:\Program Files\VideoLAN\VLC`.
+-   **Windows SDK**: Required for `signtool.exe` (signing).
+-   **GitHub CLI (`gh`)**: Required for `release` mode to create the remote release.
 
 ## Feed Discovery Services
 **Unified Search Strategy:**
