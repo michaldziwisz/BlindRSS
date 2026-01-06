@@ -546,7 +546,7 @@ class MainFrame(wx.Frame):
                 if hasattr(self.player_window, "shutdown"):
                     self.player_window.shutdown()
             except Exception:
-                pass
+                log.exception("Error during player window shutdown")
             self.player_window.Destroy()
         try:
             if getattr(self, "_media_hotkeys", None):

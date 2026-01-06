@@ -154,8 +154,8 @@ class ConfigManager:
             if resume_min_ms is not None and int(resume_min_ms) == 20000:
                 cfg["resume_min_ms"] = 0
                 changed = True
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            log.warning("Could not migrate 'resume_min_ms' due to invalid value in config.json; leaving it as is.")
 
         return bool(changed)
 

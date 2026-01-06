@@ -401,16 +401,13 @@ class PlayerFrame(wx.Frame):
         if getattr(self, "_resume_restore_inflight", False) and getattr(self, "_pending_resume_seek_ms", None) is not None:
             try:
                 self._pending_resume_seek_ms = None
-            except Exception:
-                pass
-            try:
                 self._resume_restore_inflight = False
                 self._resume_restore_id = None
                 self._resume_restore_target_ms = None
                 self._resume_restore_attempts = 0
                 self._resume_restore_last_attempt_ts = 0.0
             except Exception:
-                pass
+                log.exception("Error resetting resume state on user seek")
 
     def _schedule_resume_save_after_seek(self, delay_ms: int = 900) -> None:
         if not self._resume_feature_enabled():
@@ -502,10 +499,10 @@ class PlayerFrame(wx.Frame):
         back_ms = max(0, back_ms)
         # If the saved position is very early in the file, don't rewind back past 0
         # (otherwise it looks like resume did not work at all).
-        if int(pos_ms) <= int(back_ms):
-            target_ms = max(0, int(pos_ms))
+        if pos_ms <= back_ms:
+            target_ms = pos_ms
         else:
-            target_ms = max(0, int(pos_ms) - int(back_ms))
+            target_ms = pos_ms - back_ms
 
         self._pending_resume_seek_ms = target_ms
         self._pending_resume_seek_attempts = 0
@@ -533,6 +530,7 @@ class PlayerFrame(wx.Frame):
 
         # Even for force saves, avoid overwriting stored progress with a near-zero position while restore is pending.
         if restore_pending and force:
+            MIN_FORCE_SAVE_MS = 2000
             try:
                 if self.is_casting:
                     cur_pos_ms = int(getattr(self, "_cast_last_pos_ms", 0) or 0)
@@ -540,7 +538,7 @@ class PlayerFrame(wx.Frame):
                     cur_pos_ms = int(self._current_position_ms())
             except Exception:
                 cur_pos_ms = 0
-            if cur_pos_ms < 2000:
+            if cur_pos_ms < MIN_FORCE_SAVE_MS:
                 return
 
         try:
@@ -1337,18 +1335,12 @@ class PlayerFrame(wx.Frame):
             pass
         try:
             self._cancel_scheduled_resume_save()
-        except Exception:
-            pass
-        try:
             if getattr(self, "_seek_apply_calllater", None) is not None:
                 try:
                     self._seek_apply_calllater.Stop()
                 except Exception:
                     pass
                 self._seek_apply_calllater = None
-        except Exception:
-            pass
-        try:
             self._stopped_needs_resume = False
         except Exception:
             pass
@@ -2544,9 +2536,6 @@ class PlayerFrame(wx.Frame):
                         resume_id = self._get_resume_id()
                         if resume_id:
                             self._maybe_restore_playback_position(str(resume_id), getattr(self, "current_title", None))
-                except Exception:
-                    pass
-                try:
                     self._stopped_needs_resume = False
                 except Exception:
                     pass
@@ -2702,21 +2691,23 @@ class PlayerFrame(wx.Frame):
             pass
 
         try:
-            if getattr(self, "_seek_apply_calllater", None) is not None:
+            calllater = getattr(self, "_seek_apply_calllater", None)
+            if calllater is not None:
                 try:
-                    self._seek_apply_calllater.Stop()
+                    calllater.Stop()
                 except Exception:
-                    pass
+                    log.exception("Error stopping seek apply calllater")
                 self._seek_apply_calllater = None
         except Exception:
             pass
 
         try:
-            if getattr(self, "_seek_guard_calllater", None) is not None:
+            calllater = getattr(self, "_seek_guard_calllater", None)
+            if calllater is not None:
                 try:
-                    self._seek_guard_calllater.Stop()
+                    calllater.Stop()
                 except Exception:
-                    pass
+                    log.exception("Error stopping seek guard calllater")
                 self._seek_guard_calllater = None
         except Exception:
             pass
@@ -2744,27 +2735,21 @@ class PlayerFrame(wx.Frame):
         except Exception:
             pass
 
-        try:
-            if getattr(self, "player", None) is not None:
-                try:
-                    self.player.stop()
-                except Exception:
-                    pass
-                try:
-                    self.player.release()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        if getattr(self, "player", None) is not None:
+            try:
+                self.player.stop()
+            except Exception:
+                log.exception("Error stopping VLC player during shutdown")
+            try:
+                self.player.release()
+            except Exception:
+                log.exception("Error releasing VLC player during shutdown")
 
-        try:
-            if getattr(self, "instance", None) is not None:
-                try:
-                    self.instance.release()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        if getattr(self, "instance", None) is not None:
+            try:
+                self.instance.release()
+            except Exception:
+                log.exception("Error releasing VLC instance during shutdown")
 
         try:
             if getattr(self, "casting_manager", None) is not None:
