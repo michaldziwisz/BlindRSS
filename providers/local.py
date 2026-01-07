@@ -15,6 +15,7 @@ from core.discovery import discover_feed
 from core import utils
 from core import rumble as rumble_mod
 from core import odysee as odysee_mod
+from core import npr as npr_mod
 from bs4 import BeautifulSoup as BS, XMLParsedAsHTMLWarning
 import xml.etree.ElementTree as ET
 import logging
@@ -124,10 +125,8 @@ class LocalProvider(RSSProvider):
 
         headers = {}
         if not force:
-            # NPR feeds are finicky with 304s; force full refresh to avoid empty listings
-            if "npr.org" not in feed_url:
-                if etag: headers['If-None-Match'] = etag
-                if last_modified: headers['If-Modified-Since'] = last_modified
+            if etag: headers['If-None-Match'] = etag
+            if last_modified: headers['If-Modified-Since'] = last_modified
 
         host = urlparse(feed_url).hostname or feed_url
         limiter = host_limits[host]
@@ -571,10 +570,8 @@ class LocalProvider(RSSProvider):
                                     break
 
                     # 4. Check NPR-specific extraction if still no media
-                    # DISABLED: This causes massive slowdowns/bans on text-heavy NPR feeds (e.g. Morning Edition news feed).
-                    # Users should use the dedicated Podcast feed for audio.
-                    # if not media_url and npr_mod.is_npr_url(url):
-                    #    media_url, media_type = npr_mod.extract_npr_audio(url, timeout_s=feed_timeout)
+                    if not media_url and npr_mod.is_npr_url(url):
+                        media_url, media_type = npr_mod.extract_npr_audio(url, timeout_s=feed_timeout)
 
                     c.execute("INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                                 (article_id, feed_id, title, url, content, date, author, media_url, media_type))
@@ -972,6 +969,8 @@ class LocalProvider(RSSProvider):
 
     def add_feed(self, url: str, category: str = "Uncategorized") -> bool:
         from core.discovery import get_ytdlp_feed_url
+        from core import rumble as rumble_mod
+        from core import odysee as odysee_mod
         
         # Try to get native feed URL for media sites (e.g. YouTube)
         real_url = get_ytdlp_feed_url(url) or discover_feed(url) or url
@@ -1056,6 +1055,7 @@ class LocalProvider(RSSProvider):
 
     def import_opml(self, path: str, target_category: str = None) -> bool:
         import os
+        import sys
         import tempfile
         
         log_filename = os.path.join(tempfile.gettempdir(), f"opml_debug_{int(time.time())}_{uuid.uuid4().hex[:4]}.log")
@@ -1188,7 +1188,7 @@ class LocalProvider(RSSProvider):
                     write_log(f"OPML Import error: {e}")
                     write_log(traceback.format_exc())
                     return False
-        except Exception:
+        except Exception as e:
             # Logging file failed; continue without logging
             return False
 

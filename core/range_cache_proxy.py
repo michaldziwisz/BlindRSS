@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import sys
+import traceback
 import os
 import re
 import threading
@@ -1465,7 +1466,7 @@ class RangeCacheProxy:
                             self.send_header("Content-Length", str(ent.total_length))
                         self.send_header("Accept-Ranges", "bytes")
                         self.end_headers()
-                        print("PROXY_DEBUG: 200 OK (Full Content)")
+                        print(f"PROXY_DEBUG: 200 OK (Full Content)")
 
                     # Start background downloader early so the beginning of the file is cached ASAP.
                     try:
