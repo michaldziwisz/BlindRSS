@@ -1704,6 +1704,12 @@ class MainFrame(wx.Frame):
         if not new_articles:
             return
 
+        # Capture focus before update to restore position
+        focused_idx = self.list_ctrl.GetFocusedItem()
+        focused_article_id = None
+        if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
+             focused_article_id = self.current_articles[focused_idx].id
+
         self._remove_loading_more_placeholder()
 
         # Combine and sort to ensure chronological order even if paging overlapped/shifted
@@ -1726,6 +1732,15 @@ class MainFrame(wx.Frame):
             self.list_ctrl.SetItem(idx, 2, utils.humanize_article_date(article.date))
             self.list_ctrl.SetItem(idx, 3, article.author or '')
             self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
+        
+        # Restore focus and scroll position
+        if focused_article_id:
+            for i, a in enumerate(self.current_articles):
+                if a.id == focused_article_id:
+                    self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+                    self.list_ctrl.EnsureVisible(i)
+                    break
+
         self.list_ctrl.Thaw()
 
         # Update cache for this view
