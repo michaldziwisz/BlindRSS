@@ -2,7 +2,7 @@ wxPython
 feedparser
 requests
 beautifulsoup4
-yt-dlp
+yt-dlp[default]
 python-dateutil
 mutagen
 python-vlc

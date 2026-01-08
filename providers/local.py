@@ -491,7 +491,20 @@ class LocalProvider(RSSProvider):
                     if not article_id:
                         continue
 
-                    title = entry.get('title', 'No Title')
+                    title = entry.get('title', '')
+                    if not title or title.strip() == "No Title":
+                         # Fallback: create title from content snippet (e.g. Bluesky/Mastodon)
+                         snippet = content or ""
+                         # Strip HTML
+                         if snippet:
+                             try:
+                                 snippet = BS(snippet, "html.parser").get_text(" ", strip=True)
+                             except Exception:
+                                 pass
+                         if len(snippet) > 80:
+                             snippet = snippet[:80] + "..."
+                         title = snippet or "No Title"
+
                     url = entry.get('link', '')
                     author = entry.get('author', 'Unknown')
 
@@ -964,6 +977,19 @@ class LocalProvider(RSSProvider):
             deleted = int(c.rowcount or 0)
             conn.commit()
             return deleted > 0
+        finally:
+            conn.close()
+
+    def update_article_media(self, article_id: str, media_url: str, media_type: str) -> bool:
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            c.execute("UPDATE articles SET media_url = ?, media_type = ? WHERE id = ?", (media_url, media_type, article_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error(f"Error updating article media: {e}")
+            return False
         finally:
             conn.close()
 

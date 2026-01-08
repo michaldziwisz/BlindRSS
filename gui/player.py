@@ -857,11 +857,17 @@ class PlayerFrame(wx.Frame):
             except Exception:
                 cast_pos_ms = None
 
-            if cast_pos_ms is None:
+            # Fallback if device returns nothing or 0 (likely buffering/glitch)
+            if cast_pos_ms is None or cast_pos_ms == 0:
                 try:
-                    cast_pos_ms = int(getattr(self, '_cast_last_pos_ms', 0) or 0)
+                    fallback = int(getattr(self, '_cast_last_pos_ms', 0) or 0)
+                    if fallback > 0:
+                        cast_pos_ms = fallback
                 except Exception:
-                    cast_pos_ms = 0
+                    pass
+            
+            if cast_pos_ms is None:
+                cast_pos_ms = 0
 
             cast_was_playing = bool(self.is_playing)
 
@@ -1591,7 +1597,10 @@ class PlayerFrame(wx.Frame):
                     self._cast_poll_ts = now
                     pos_sec = self.casting_manager.get_position()
                     if pos_sec is not None:
-                        self._cast_last_pos_ms = int(float(pos_sec) * 1000.0)
+                        val = int(float(pos_sec) * 1000.0)
+                        # Only update if > 0 to avoid overwriting valid progress with 0 during glitches
+                        if val > 0:
+                            self._cast_last_pos_ms = val
             except Exception:
                 pass
             try:
@@ -2081,7 +2090,18 @@ class PlayerFrame(wx.Frame):
 
         if not self.is_casting:
             try:
-                self.player.audio_set_volume(int(percent))
+                # Only call audio_set_volume if playing, OR if we want to risk unpausing.
+                # User reported that changing volume unpauses playback.
+                # So we guard it.
+                should_set = True
+                try:
+                    if not self.player.is_playing():
+                        should_set = False
+                except Exception:
+                    pass
+                
+                if should_set:
+                    self.player.audio_set_volume(int(percent))
             except Exception:
                 pass
 

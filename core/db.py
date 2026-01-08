@@ -124,6 +124,59 @@ def init_db():
         conn.close()
 
 
+def cleanup_old_articles(days: int, keep_favorites: bool = True):
+    """
+    Delete articles older than 'days' days.
+    
+    Args:
+        days: Number of days to retain.
+        keep_favorites: If True, do not delete favorited articles.
+    """
+    if days is None or days < 0:
+        return
+        
+    conn = get_connection()
+    try:
+        # Calculate cutoff date
+        # SQLite's 'now' is UTC. verify if we need 'localtime' or if normalization uses UTC.
+        # core.utils.normalize_date produces 'YYYY-MM-DD HH:MM:SS' (usually UTC or naive).
+        # We'll use SQLite's date modifier.
+        cutoff_date_query = f"date('now', '-{days} days')"
+        
+        query = "DELETE FROM articles WHERE date < date('now', '-? days')"
+        # Parameter substitution for days in modifiers is tricky in sqlite, constructing string is safer for modifier
+        # provided 'days' is int.
+        
+        params = []
+        where_clauses = [f"date < date('now', '-{int(days)} days')"]
+        
+        if keep_favorites:
+            where_clauses.append("is_favorite = 0")
+            
+        where_str = " AND ".join(where_clauses)
+        
+        # 1. Delete chapters for these articles first (no CASCADE support guaranteed)
+        # We can use subquery: DELETE FROM chapters WHERE article_id IN (SELECT id FROM articles WHERE ...)
+        
+        subquery = f"SELECT id FROM articles WHERE {where_str}"
+        
+        c = conn.cursor()
+        c.execute(f"DELETE FROM chapters WHERE article_id IN ({subquery})")
+        c.execute(f"DELETE FROM articles WHERE {where_str}")
+        
+        deleted = c.rowcount
+        conn.commit()
+        if deleted > 0:
+            log.info(f"Cleaned up {deleted} old articles (retention: {days} days)")
+            # VACUUM is heavy, maybe just auto_vacuum handles it or do it rarely.
+            # c.execute("VACUUM") 
+            
+    except Exception as e:
+        log.error(f"Error cleaning up old articles: {e}")
+    finally:
+        conn.close()
+
+
 def get_connection():
     conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
     try:

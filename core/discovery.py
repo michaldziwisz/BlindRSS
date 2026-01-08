@@ -186,6 +186,9 @@ def get_ytdlp_feed_url(url: str) -> str:
             playlist_id = qs.get("list", [None])[0]
             if playlist_id:
                 return f"https://www.youtube.com/feeds/videos.xml?playlist_id={playlist_id}"
+        if "/@" in url:
+            # Handle @handle URLs by using yt-dlp to get the channel ID
+            pass
         
         # Use yt-dlp to find channel ID for custom URLs
         try:
@@ -195,7 +198,18 @@ def get_ytdlp_feed_url(url: str) -> str:
                 creationflags = 0x08000000
                 
             # extract_flat gives us channel info without downloading every video info
+            # Use cookies to avoid "Sign in to confirm you’re not a bot" errors
             cmd = ["yt-dlp", "--dump-json", "--playlist-items", "0", url]
+            
+            # Add cookies if available
+            cookies = get_ytdlp_cookie_sources(url)
+            if cookies:
+                # Use the first available source
+                browser = cookies[0][0]
+                cmd.extend(["--cookies-from-browser", browser])
+                if len(cookies[0]) > 1:
+                    cmd.append(cookies[0][1]) # profile
+
             res = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -203,7 +217,7 @@ def get_ytdlp_feed_url(url: str) -> str:
                 stdin=subprocess.DEVNULL,
                 creationflags=creationflags,
                 startupinfo=_get_startup_info(),
-                timeout=10
+                timeout=15 # Increased timeout for cookie processing
             )
             if res.returncode == 0 and res.stdout:
                 data = json.loads(res.stdout)
@@ -370,3 +384,64 @@ def discover_feeds(url: str) -> list[str]:
         seen.add(fu)
         out.append(fu)
     return out
+
+def detect_media(url: str, timeout: int = 20) -> tuple[str | None, str | None]:
+    """
+    Attempt to detect media (audio/video) for a given URL using yt-dlp and other heuristics.
+    Returns (media_url, media_type) or (None, None).
+    """
+    if not url:
+        return None, None
+
+    # 1. NPR specific
+    if "npr.org" in url:
+        from core import npr
+        murl, mtype = npr.extract_npr_audio(url, timeout_s=float(timeout))
+        if murl:
+            return murl, mtype
+
+    # 2. yt-dlp (with cookies)
+    try:
+        from core.dependency_check import _get_startup_info
+        creationflags = 0
+        if platform.system().lower() == "windows":
+            creationflags = 0x08000000
+
+        cmd = ["yt-dlp", "--dump-json", "--no-playlist", url]
+        
+        # Add cookies if available
+        cookies = get_ytdlp_cookie_sources(url)
+        if cookies:
+            browser = cookies[0][0]
+            cmd.extend(["--cookies-from-browser", browser])
+            if len(cookies[0]) > 1:
+                cmd.append(cookies[0][1])
+
+        res = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            startupinfo=_get_startup_info(),
+            timeout=timeout
+        )
+        
+        if res.returncode == 0 and res.stdout:
+            data = json.loads(res.stdout)
+            media_url = data.get("url")
+            if media_url:
+                # Determine type
+                ext = data.get("ext", "")
+                if ext == "mp3": mtype = "audio/mpeg"
+                elif ext == "m4a": mtype = "audio/mp4"
+                elif ext == "mp4": mtype = "video/mp4"
+                else: mtype = "application/octet-stream" # Generic
+                
+                # Check if it's strictly video but we prefer audio? 
+                # For now just return what we found.
+                return media_url, mtype
+    except Exception:
+        pass
+        
+    return None, None

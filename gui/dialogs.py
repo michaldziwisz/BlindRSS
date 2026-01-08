@@ -100,8 +100,43 @@ class SettingsDialog(wx.Dialog):
         general_sizer = wx.BoxSizer(wx.VERTICAL)
         
         refresh_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        refresh_sizer.Add(wx.StaticText(general_panel, label="Refresh Interval (seconds):"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.refresh_ctrl = wx.SpinCtrl(general_panel, min=60, max=3600, initial=int(config.get("refresh_interval", 300)))
+        refresh_sizer.Add(wx.StaticText(general_panel, label="Refresh Interval:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        
+        self.refresh_map = {
+            "Never": 0,
+            "30 seconds": 30,
+            "1 minute": 60,
+            "2 minutes": 120,
+            "3 minutes": 180,
+            "4 minutes": 240,
+            "5 minutes": 300,
+            "10 minutes": 600,
+            "15 minutes": 900,
+            "30 minutes": 1800,
+            "60 minutes": 3600,
+            "2 hours": 7200,
+            "3 hours": 10800,
+            "4 hours": 14400
+        }
+        self.refresh_choices = list(self.refresh_map.keys())
+        self.refresh_ctrl = wx.Choice(general_panel, choices=self.refresh_choices)
+        
+        # Set initial selection
+        current_interval = int(config.get("refresh_interval", 300))
+        # Find closest match
+        best_choice = "5 minutes"
+        min_diff = float('inf')
+        for k, v in self.refresh_map.items():
+            if v == 0 and current_interval == 0:
+                best_choice = k
+                break
+            if v > 0:
+                diff = abs(v - current_interval)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_choice = k
+        self.refresh_ctrl.SetStringSelection(best_choice)
+        
         refresh_sizer.Add(self.refresh_ctrl, 0, wx.ALL, 5)
         general_sizer.Add(refresh_sizer, 0, wx.EXPAND | wx.ALL, 5)
         
@@ -198,6 +233,13 @@ class SettingsDialog(wx.Dialog):
         retention_sizer.Add(self.retention_ctrl, 0, wx.ALL, 5)
         general_sizer.Add(retention_sizer, 0, wx.EXPAND | wx.ALL, 5)
         
+        art_retention_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        art_retention_sizer.Add(wx.StaticText(general_panel, label="Article Retention:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.art_retention_ctrl = wx.ComboBox(general_panel, choices=retention_opts, style=wx.CB_READONLY)
+        self.art_retention_ctrl.SetValue(config.get("article_retention", "Unlimited"))
+        art_retention_sizer.Add(self.art_retention_ctrl, 0, wx.ALL, 5)
+        general_sizer.Add(art_retention_sizer, 0, wx.EXPAND | wx.ALL, 5)
+
         # Tray settings
         self.close_tray_chk = wx.CheckBox(general_panel, label="Close to Tray")
         self.close_tray_chk.SetValue(config.get("close_to_tray", False))
@@ -396,7 +438,7 @@ class SettingsDialog(wx.Dialog):
             providers[name] = p_cfg
 
         return {
-            "refresh_interval": self.refresh_ctrl.GetValue(),
+            "refresh_interval": self.refresh_map.get(self.refresh_ctrl.GetStringSelection(), 300),
             "max_concurrent_refreshes": self.concurrent_ctrl.GetValue(),
             "per_host_max_connections": self.per_host_ctrl.GetValue(),
             "feed_timeout_seconds": self.timeout_ctrl.GetValue(),
@@ -409,6 +451,7 @@ class SettingsDialog(wx.Dialog):
             "downloads_enabled": self.downloads_chk.GetValue(),
             "download_path": self.dl_path_ctrl.GetValue(),
             "download_retention": self.retention_ctrl.GetValue(),
+            "article_retention": self.art_retention_ctrl.GetValue(),
             "close_to_tray": self.close_tray_chk.GetValue(),
             "minimize_to_tray": self.min_tray_chk.GetValue(),
             "start_maximized": self.start_maximized_chk.GetValue(),

@@ -135,10 +135,11 @@ class MainFrame(wx.Frame):
         # Top Right: List (Articles)
         self.list_ctrl = wx.ListCtrl(right_splitter, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
         self.list_ctrl.SetName("Articles List")
-        self.list_ctrl.InsertColumn(0, "Title", width=400)
-        self.list_ctrl.InsertColumn(1, "Date", width=150)
-        self.list_ctrl.InsertColumn(2, "Author", width=150)
-        self.list_ctrl.InsertColumn(3, "Status", width=80)
+        self.list_ctrl.InsertColumn(0, "Title", width=350)
+        self.list_ctrl.InsertColumn(1, "Feed", width=150)
+        self.list_ctrl.InsertColumn(2, "Date", width=120)
+        self.list_ctrl.InsertColumn(3, "Author", width=120)
+        self.list_ctrl.InsertColumn(4, "Status", width=80)
         
         # Bottom Right: Content (No embedded player anymore)
         self.content_ctrl = wx.TextCtrl(right_splitter, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
@@ -776,6 +777,10 @@ class MainFrame(wx.Frame):
             if article_for_menu.media_url:
                 download_item = menu.Append(wx.ID_ANY, "Download")
                 self.Bind(wx.EVT_MENU, lambda e, a=article_for_menu: self.on_download_article(a), download_item)
+            else:
+                detect_audio_item = menu.Append(wx.ID_ANY, "Detect Audio")
+                self.Bind(wx.EVT_MENU, lambda e, a=article_for_menu: self.on_detect_audio(a), detect_audio_item)
+
             try:
                 if getattr(self.provider, "supports_favorites", lambda: False)() and hasattr(self, "_toggle_favorite_id"):
                     label = "Remove from Favorites" if getattr(article_for_menu, "is_favorite", False) else "Add to Favorites"
@@ -822,6 +827,63 @@ class MainFrame(wx.Frame):
                 wx.TheClipboard.SetData(wx.TextDataObject(article.url))
                 wx.TheClipboard.Close()
 
+    def on_detect_audio(self, article):
+        if not article or not article.url:
+            return
+            
+        wx.MessageBox("Scanning for audio... This may take a few seconds.", "Detect Audio", wx.ICON_INFORMATION)
+        
+        def _worker():
+            try:
+                murl, mtype = core.discovery.detect_media(article.url)
+                if murl:
+                    if hasattr(self.provider, "update_article_media"):
+                        self.provider.update_article_media(article.id, murl, mtype)
+                        article.media_url = murl
+                        article.media_type = mtype
+                        
+                        # Refresh UI for this item
+                        wx.CallAfter(self._refresh_article_in_list, article.id)
+                        wx.CallAfter(wx.MessageBox, "Audio detected and added!", "Success", wx.ICON_INFORMATION)
+                    else:
+                         wx.CallAfter(wx.MessageBox, "Provider does not support updating media.", "Error", wx.ICON_ERROR)
+                else:
+                    wx.CallAfter(wx.MessageBox, "No audio found.", "Result", wx.ICON_INFORMATION)
+            except Exception as e:
+                wx.CallAfter(wx.MessageBox, f"Error detecting audio: {e}", "Error", wx.ICON_ERROR)
+                
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_article_in_list(self, article_id):
+        # Find item index
+        idx = -1
+        for i, a in enumerate(self.current_articles):
+            if a.id == article_id:
+                idx = i
+                break
+        
+        if idx != -1:
+            # We don't have a column for 'Has Audio', but if we did we'd update it.
+            # However, we should update the cached view so if the user navigates away and back, it's there.
+            self._update_cached_views_for_article(self.current_articles[idx])
+            
+            # If this is the selected article, update the content view (though content view doesn't show audio controls directly, 
+            # the player logic might need to know).
+            if self.selected_article_id == article_id:
+                 # maybe refresh content?
+                 pass
+
+    def _update_cached_views_for_article(self, article):
+        try:
+            with getattr(self, "_view_cache_lock", threading.Lock()):
+                for st in (self.view_cache or {}).values():
+                    for a in (st.get("articles") or []):
+                        if getattr(a, "id", None) == article.id:
+                            a.media_url = article.media_url
+                            a.media_type = article.media_type
+        except Exception:
+            pass
+
     def _supports_favorites(self) -> bool:
         try:
             return bool(getattr(self.provider, "supports_favorites", lambda: False)())
@@ -847,20 +909,9 @@ class MainFrame(wx.Frame):
         return view_id.startswith("favorites:") or view_id.startswith("fav:")
 
     def _get_display_title(self, article) -> str:
-        """Return title to display in list. For aggregate views, append feed title."""
+        """Return title to display in list. Now that we have a Feed column, just return the title."""
         title = article.title or ""
-        fid = getattr(self, "current_feed_id", None)
-        
-        # Check if current view is an aggregate (All, Unread, Favorites)
-        is_aggregate = False
-        if not fid or fid == "all" or fid.startswith("unread:") or fid.startswith("read:") or fid.startswith("favorites:") or fid.startswith("fav:"):
-            is_aggregate = True
-            
-        if is_aggregate and article.feed_id:
-            feed = self.feed_map.get(article.feed_id)
-            if feed and feed.title:
-                return f"{title} - {feed.title}"
-        
+        # Removed appending feed title since it now has a column
         return title
 
     def _sync_favorite_flag_in_cached_views(self, article_id: str, is_favorite: bool) -> None:
@@ -1201,12 +1252,19 @@ class MainFrame(wx.Frame):
 
         while not self.stop_event.is_set():
             interval = int(self.config_manager.get("refresh_interval", 300))
+            if interval <= 0:
+                # "Never" setting: wait 5s then check config/stop event again
+                if self.stop_event.wait(5):
+                    return
+                continue
+                
             try:
                 self._run_refresh(block=False)
             except Exception as e:
                 print(f"Refresh error: {e}")
             # Sleep in one shot but wake early if closing
-            self.stop_event.wait(interval)
+            if self.stop_event.wait(interval):
+                return
 
     def refresh_feeds(self):
         # Offload data fetching to background thread to prevent blocking UI
@@ -1214,6 +1272,30 @@ class MainFrame(wx.Frame):
 
     def _refresh_feeds_worker(self):
         try:
+            # Perform retention cleanup first
+            try:
+                from core.db import cleanup_old_articles
+                retention_str = self.config_manager.get("article_retention", "Unlimited")
+                days = None
+                if retention_str == "1 day": days = 1
+                elif retention_str == "2 days": days = 2
+                elif retention_str == "3 days": days = 3
+                elif retention_str == "1 week": days = 7
+                elif retention_str == "2 weeks": days = 14
+                elif retention_str == "3 weeks": days = 21
+                elif retention_str == "1 month": days = 30
+                elif retention_str == "2 months": days = 60
+                elif retention_str == "3 months": days = 90
+                elif retention_str == "6 months": days = 180
+                elif retention_str == "1 year": days = 365
+                elif retention_str == "2 years": days = 730
+                elif retention_str == "5 years": days = 1825
+                
+                if days is not None:
+                    cleanup_old_articles(days)
+            except Exception as e:
+                log.error(f"Retention cleanup failed: {e}")
+
             feeds = self.provider.get_feeds()
             all_cats = self.provider.get_categories()
             wx.CallAfter(self._update_tree, feeds, all_cats)
@@ -1542,9 +1624,17 @@ class MainFrame(wx.Frame):
         self.list_ctrl.Freeze()
         for i, article in enumerate(self.current_articles):
             idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
-            self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
-            self.list_ctrl.SetItem(idx, 2, article.author or '')
-            self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")
+            
+            feed_title = ""
+            if article.feed_id:
+                feed = self.feed_map.get(article.feed_id)
+                if feed:
+                    feed_title = feed.title or ""
+            
+            self.list_ctrl.SetItem(idx, 1, feed_title)
+            self.list_ctrl.SetItem(idx, 2, utils.humanize_article_date(article.date))
+            self.list_ctrl.SetItem(idx, 3, article.author or '')
+            self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
         self.list_ctrl.Thaw()
 
         # Add a placeholder row if we know/strongly suspect there is more history coming.
@@ -1625,9 +1715,17 @@ class MainFrame(wx.Frame):
         self.list_ctrl.DeleteAllItems()
         for i, article in enumerate(self.current_articles):
             idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
-            self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
-            self.list_ctrl.SetItem(idx, 2, article.author or '')
-            self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")
+            
+            feed_title = ""
+            if article.feed_id:
+                feed = self.feed_map.get(article.feed_id)
+                if feed:
+                    feed_title = feed.title or ""
+            
+            self.list_ctrl.SetItem(idx, 1, feed_title)
+            self.list_ctrl.SetItem(idx, 2, utils.humanize_article_date(article.date))
+            self.list_ctrl.SetItem(idx, 3, article.author or '')
+            self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
         self.list_ctrl.Thaw()
 
         # Update cache for this view
@@ -1688,6 +1786,7 @@ class MainFrame(wx.Frame):
         self.list_ctrl.SetItem(idx, 1, "")
         self.list_ctrl.SetItem(idx, 2, "")
         self.list_ctrl.SetItem(idx, 3, "")
+        self.list_ctrl.SetItem(idx, 4, "")
         self._loading_more_placeholder = True
 
     def _remove_loading_more_placeholder(self):
@@ -1710,9 +1809,9 @@ class MainFrame(wx.Frame):
             self.list_ctrl.SetItem(count - 1, 1, "")
             self.list_ctrl.SetItem(count - 1, 2, "")
             self.list_ctrl.SetItem(count - 1, 3, "")
+            self.list_ctrl.SetItem(count - 1, 4, "")
         except Exception:
             pass
-
     def _is_load_more_row(self, idx: int) -> bool:
         if idx is None or idx < 0:
             return False
@@ -1828,9 +1927,17 @@ class MainFrame(wx.Frame):
             self.list_ctrl.DeleteAllItems()
             for i, article in enumerate(self.current_articles):
                 idx = self.list_ctrl.InsertItem(i, self._get_display_title(article))
-                self.list_ctrl.SetItem(idx, 1, utils.humanize_article_date(article.date))
-                self.list_ctrl.SetItem(idx, 2, article.author or "")
-                self.list_ctrl.SetItem(idx, 3, "Read" if article.is_read else "Unread")
+                
+                feed_title = ""
+                if article.feed_id:
+                    feed = self.feed_map.get(article.feed_id)
+                    if feed:
+                        feed_title = feed.title or ""
+                        
+                self.list_ctrl.SetItem(idx, 1, feed_title)
+                self.list_ctrl.SetItem(idx, 2, utils.humanize_article_date(article.date))
+                self.list_ctrl.SetItem(idx, 3, article.author or "")
+                self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
             
             # Restore selection state
             if selected_id:
