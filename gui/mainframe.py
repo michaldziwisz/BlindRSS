@@ -1908,20 +1908,35 @@ class MainFrame(wx.Frame):
         if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
              focused_article_id = self.current_articles[focused_idx].id
 
-        # Check if the list currently has keyboard focus (system-wide)
-        list_has_system_focus = (wx.Window.FindFocus() == self.list_ctrl)
-
         self._updating_list = True
         try:
             # Combine, deduplicate, and sort
             combined = new_entries + self.current_articles
             combined.sort(key=lambda a: (a.timestamp, a.id), reverse=True)
             
-            # If no change in order or content (unlikely if new_entries was non-empty), skip
+            # Enforce page-limited view based on how many history pages the user loaded.
+            truncated = False
+            try:
+                fid = getattr(self, "current_feed_id", None)
+                if fid:
+                    st = self._ensure_view_state(fid)
+                    paged = int(st.get("paged_offset", page_size))
+                    allowed_pages = max(1, (paged + page_size - 1) // page_size)
+                    allowed = allowed_pages * page_size
+                    if len(combined) > allowed:
+                        combined = combined[:allowed]
+                        truncated = True
+            except Exception:
+                pass
+
+            # If no change in order or content after truncation, skip
             if [a.id for a in combined] == [a.id for a in self.current_articles]:
                 return
 
             self.current_articles = combined
+            
+            # Reset placeholder state since we are doing a full rebuild
+            self._remove_loading_more_placeholder()
 
             self.list_ctrl.Freeze()
             self.list_ctrl.DeleteAllItems()
@@ -1958,35 +1973,31 @@ class MainFrame(wx.Frame):
                         break
 
             self.list_ctrl.Thaw()
-        finally:
-            self._updating_list = False
-
-        # Enforce page-limited view based on how many history pages the user loaded.
-        try:
+            
+            # Re-evaluate "Load More" placeholder
+            more = False
             fid = getattr(self, "current_feed_id", None)
             if fid:
                 st = self._ensure_view_state(fid)
-                paged = int(st.get("paged_offset", page_size))
-                allowed_pages = max(1, (paged + page_size - 1) // page_size)
-                allowed = allowed_pages * page_size
-                if len(self.current_articles) > allowed:
-                    self.current_articles = self.current_articles[:allowed]
-                    
-                    has_placeholder = getattr(self, "_loading_more_placeholder", False)
-                    target_count = len(self.current_articles) + (1 if has_placeholder else 0)
-                    
-                    while self.list_ctrl.GetItemCount() > target_count:
-                        try:
-                            # If placeholder exists, delete the item *before* it to preserve the "Load More" button
-                            idx_to_delete = self.list_ctrl.GetItemCount() - (2 if has_placeholder else 1)
-                            if idx_to_delete >= 0:
-                                self.list_ctrl.DeleteItem(idx_to_delete)
-                            else:
-                                break
-                        except Exception:
-                            break
-        except Exception:
-            pass
+                total = st.get("total")
+                if total is None:
+                    # If we truncated, we definitely have more.
+                    # Otherwise fallback to page check
+                    more = truncated or (len(self.current_articles) >= page_size)
+                else:
+                    try:
+                        # If we have a total, checks if we've shown everything.
+                        # Note: paged_offset tracks what we FETCHED, not what we show.
+                        # But typically they align unless we truncated.
+                        more = int(total) > len(self.current_articles)
+                    except Exception:
+                        more = False
+            
+            if more:
+                self._add_loading_more_placeholder()
+
+        finally:
+            self._updating_list = False
 
         # Update cache for this view (do not reset paging offset)
         fid = getattr(self, 'current_feed_id', None)
