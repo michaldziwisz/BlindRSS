@@ -46,14 +46,3 @@ BlindRSS can check GitHub Releases for updates, verify integrity, and safely swa
 ### Update Manifest
 Each release includes `BlindRSS-update.json` with:
 - version, asset name, download URL, SHA-256, publish date, and summary.
-
-## Manual Test Plan (Updater)
-1. Simulate an older version:
-   - Set `core/version.py` to `1.41.0`, then run `build.bat build` and install/run that zip.
-2. Publish a new release:
-   - Set `core/version.py` back to current, then run `build.bat release` to publish v1.42.0+ with assets.
-3. In the old build:
-   - Tools → "Check for Updates..." and accept the prompt.
-4. Verify:
-   - Zip SHA-256 and Authenticode verification succeeds.
-   - App closes, swaps files, restarts, and reports the new version.
