@@ -1704,11 +1704,17 @@ class MainFrame(wx.Frame):
         if not new_articles:
             return
 
-        # Capture focus before update to restore position
+        # Capture state before update to restore position
         focused_idx = self.list_ctrl.GetFocusedItem()
         focused_article_id = None
         if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
              focused_article_id = self.current_articles[focused_idx].id
+             
+        # Capture the top item in the view to preserve scroll position
+        top_idx = self.list_ctrl.GetTopItem()
+        top_article_id = None
+        if top_idx != wx.NOT_FOUND and 0 <= top_idx < len(self.current_articles):
+            top_article_id = self.current_articles[top_idx].id
 
         self._remove_loading_more_placeholder()
 
@@ -1733,15 +1739,10 @@ class MainFrame(wx.Frame):
             self.list_ctrl.SetItem(idx, 3, article.author or '')
             self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
         
-        # Restore focus and scroll position
-        if focused_article_id:
-            for i, a in enumerate(self.current_articles):
-                if a.id == focused_article_id:
-                    self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
-                    self.list_ctrl.EnsureVisible(i)
-                    break
-
         self.list_ctrl.Thaw()
+        
+        # Restore view state AFTER Thaw to ensure layout is updated
+        wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id)
 
         # Update cache for this view
         if fid:
@@ -1778,6 +1779,46 @@ class MainFrame(wx.Frame):
             self._add_loading_more_placeholder()
         else:
             self._remove_loading_more_placeholder()
+
+    def _restore_list_view(self, focused_id, top_id, selected_id=None):
+        """Restore focus, selection, and scroll position after list rebuild."""
+        if not self.current_articles:
+            return
+            
+        # 1. Restore Selection
+        if selected_id:
+            for i, a in enumerate(self.current_articles):
+                if a.id == selected_id:
+                    self.list_ctrl.SetItemState(i, wx.LIST_STATE_SELECTED, wx.LIST_STATE_SELECTED)
+                    break
+
+        # 2. Restore Focus
+        if focused_id:
+            for i, a in enumerate(self.current_articles):
+                if a.id == focused_id:
+                    self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+                    # If we don't have a specific scroll target, ensure focused is visible
+                    if not top_id:
+                        self.list_ctrl.EnsureVisible(i)
+                    break
+        
+        # 3. Restore Scroll Position (Top Item)
+        if top_id:
+            target_idx = -1
+            for i, a in enumerate(self.current_articles):
+                if a.id == top_id:
+                    target_idx = i
+                    break
+            
+            if target_idx != -1:
+                # Trick to force the item to the TOP of the view:
+                # EnsureVisible(target) usually brings it to the bottom if scrolling down.
+                # EnsureVisible(last) -> Scrolls to bottom.
+                # EnsureVisible(target) -> Scrolls up until target is at top.
+                count = self.list_ctrl.GetItemCount()
+                if count > 0:
+                    self.list_ctrl.EnsureVisible(count - 1) 
+                    self.list_ctrl.EnsureVisible(target_idx)
 
     def _finish_loading_more(self, request_id):
         if not hasattr(self, 'current_request_id') or request_id != self.current_request_id:
@@ -1923,6 +1964,12 @@ class MainFrame(wx.Frame):
         if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
              focused_article_id = self.current_articles[focused_idx].id
 
+        # Capture Top Item for scroll restoration
+        top_idx = self.list_ctrl.GetTopItem()
+        top_article_id = None
+        if top_idx != wx.NOT_FOUND and 0 <= top_idx < len(self.current_articles):
+            top_article_id = self.current_articles[top_idx].id
+
         self._updating_list = True
         try:
             # Combine, deduplicate, and sort
@@ -1969,25 +2016,10 @@ class MainFrame(wx.Frame):
                 self.list_ctrl.SetItem(idx, 3, article.author or "")
                 self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
             
-            # Restore selection state
-            if selected_id:
-                for i, a in enumerate(self.current_articles):
-                    if a.id == selected_id:
-                        self.list_ctrl.SetItemState(i, wx.LIST_STATE_SELECTED, wx.LIST_STATE_SELECTED)
-                        if not focused_article_id: # If no focus tracked, ensure selection is visible
-                             self.list_ctrl.EnsureVisible(i)
-                        break
-            
-            # Restore focus state (distinct from selection)
-            if focused_article_id:
-                for i, a in enumerate(self.current_articles):
-                    if a.id == focused_article_id:
-                        self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
-                        # Only scroll to it if the list is actually active or we want to maintain context
-                        self.list_ctrl.EnsureVisible(i)
-                        break
-
             self.list_ctrl.Thaw()
+            
+            # Restore View State
+            wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id, selected_id)
             
             # Re-evaluate "Load More" placeholder
             more = False
