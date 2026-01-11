@@ -1706,10 +1706,20 @@ class MainFrame(wx.Frame):
 
         # Capture state before update to restore position
         focused_idx = self.list_ctrl.GetFocusedItem()
+        selected_idx = self.list_ctrl.GetFirstSelected()
+        focused_on_load_more = self._is_load_more_row(focused_idx)
+        selected_on_load_more = self._is_load_more_row(selected_idx)
+
         focused_article_id = None
-        if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
+        if (not focused_on_load_more) and focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
              focused_article_id = self.current_articles[focused_idx].id
-             
+
+        selected_article_id = None
+        if (not selected_on_load_more) and selected_idx != wx.NOT_FOUND and 0 <= selected_idx < len(self.current_articles):
+            selected_article_id = self.current_articles[selected_idx].id
+        if selected_article_id is None and not selected_on_load_more:
+            selected_article_id = getattr(self, "selected_article_id", None)
+
         # Capture the top item in the view to preserve scroll position
         top_idx = self.list_ctrl.GetTopItem()
         top_article_id = None
@@ -1740,9 +1750,6 @@ class MainFrame(wx.Frame):
             self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
         
         self.list_ctrl.Thaw()
-        
-        # Restore view state AFTER Thaw to ensure layout is updated
-        wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id)
 
         # Update cache for this view
         if fid:
@@ -1780,28 +1787,47 @@ class MainFrame(wx.Frame):
         else:
             self._remove_loading_more_placeholder()
 
+        restore_load_more = focused_on_load_more or selected_on_load_more
+        if restore_load_more:
+            wx.CallAfter(self._restore_load_more_focus)
+        else:
+            # Restore view state AFTER Thaw to ensure layout is updated
+            wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id, selected_article_id)
+
     def _restore_list_view(self, focused_id, top_id, selected_id=None):
         """Restore focus, selection, and scroll position after list rebuild."""
         if not self.current_articles:
             return
-            
+
         # 1. Restore Selection
+        selected_idx = None
         if selected_id:
             for i, a in enumerate(self.current_articles):
                 if a.id == selected_id:
+                    selected_idx = i
                     self.list_ctrl.SetItemState(i, wx.LIST_STATE_SELECTED, wx.LIST_STATE_SELECTED)
                     break
 
         # 2. Restore Focus
+        focused_idx = None
         if focused_id:
             for i, a in enumerate(self.current_articles):
                 if a.id == focused_id:
+                    focused_idx = i
                     self.list_ctrl.SetItemState(i, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
                     # If we don't have a specific scroll target, ensure focused is visible
                     if not top_id:
                         self.list_ctrl.EnsureVisible(i)
                     break
-        
+        elif selected_idx is not None:
+            try:
+                focused_idx = selected_idx
+                self.list_ctrl.SetItemState(selected_idx, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+                if not top_id:
+                    self.list_ctrl.EnsureVisible(selected_idx)
+            except Exception:
+                pass
+
         # 3. Restore Scroll Position (Top Item)
         if top_id:
             target_idx = -1
@@ -1817,8 +1843,25 @@ class MainFrame(wx.Frame):
                 # EnsureVisible(target) -> Scrolls up until target is at top.
                 count = self.list_ctrl.GetItemCount()
                 if count > 0:
-                    self.list_ctrl.EnsureVisible(count - 1) 
+                    self.list_ctrl.EnsureVisible(count - 1)
                     self.list_ctrl.EnsureVisible(target_idx)
+
+    def _restore_load_more_focus(self):
+        """Keep focus on the Load More row after paging for screen readers."""
+        try:
+            count = self.list_ctrl.GetItemCount()
+        except Exception:
+            return
+        if count <= 0:
+            return
+
+        target_idx = count - 1
+        try:
+            self.list_ctrl.SetItemState(target_idx, wx.LIST_STATE_SELECTED, wx.LIST_STATE_SELECTED)
+            self.list_ctrl.SetItemState(target_idx, wx.LIST_STATE_FOCUSED, wx.LIST_STATE_FOCUSED)
+            self.list_ctrl.EnsureVisible(target_idx)
+        except Exception:
+            pass
 
     def _finish_loading_more(self, request_id):
         if not hasattr(self, 'current_request_id') or request_id != self.current_request_id:
@@ -1958,10 +2001,17 @@ class MainFrame(wx.Frame):
 
         # Remember selection and focus by article id
         selected_id = getattr(self, "selected_article_id", None)
-        
+
         focused_idx = self.list_ctrl.GetFocusedItem()
+        selected_idx = self.list_ctrl.GetFirstSelected()
+        focused_on_load_more = self._is_load_more_row(focused_idx)
+        selected_on_load_more = self._is_load_more_row(selected_idx)
+
+        if selected_on_load_more:
+            selected_id = None
+
         focused_article_id = None
-        if focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
+        if (not focused_on_load_more) and focused_idx != wx.NOT_FOUND and 0 <= focused_idx < len(self.current_articles):
              focused_article_id = self.current_articles[focused_idx].id
 
         # Capture Top Item for scroll restoration
@@ -2017,10 +2067,7 @@ class MainFrame(wx.Frame):
                 self.list_ctrl.SetItem(idx, 4, "Read" if article.is_read else "Unread")
             
             self.list_ctrl.Thaw()
-            
-            # Restore View State
-            wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id, selected_id)
-            
+
             # Re-evaluate "Load More" placeholder
             more = False
             fid = getattr(self, "current_feed_id", None)
@@ -2042,6 +2089,15 @@ class MainFrame(wx.Frame):
             
             if more:
                 self._add_loading_more_placeholder()
+            else:
+                self._remove_loading_more_placeholder()
+
+            restore_load_more = focused_on_load_more or selected_on_load_more
+            if restore_load_more:
+                wx.CallAfter(self._restore_load_more_focus)
+            else:
+                # Restore View State
+                wx.CallAfter(self._restore_list_view, focused_article_id, top_article_id, selected_id)
 
         finally:
             self._updating_list = False
