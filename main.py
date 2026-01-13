@@ -124,12 +124,13 @@ class RSSApp(wx.App):
         except Exception as e:
             log.debug(f"Update cleanup failed: {e}")
 
-        # Run dependency check in background so GUI is not blocked
-        threading.Thread(target=check_and_install_dependencies, daemon=True).start()
         self.provider = get_provider(self.config_manager)
         
         self.frame = MainFrame(self.provider, self.config_manager)
         self.frame.Show()
+
+        # Run dependency check after the UI is visible to reduce startup work.
+        wx.CallLater(2000, lambda: threading.Thread(target=check_and_install_dependencies, daemon=True).start())
 
         # Install a global filter so media shortcuts work everywhere (including modal dialogs)
         try:

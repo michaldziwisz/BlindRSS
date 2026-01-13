@@ -1,3 +1,5 @@
+Install anything you need.
+
 You are a python expert skilled in yt-dlp, ffmpeg,  and rss.
 # BlindRSS Architecture & Dev Guide
 

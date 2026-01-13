@@ -53,8 +53,8 @@ class MainFrame(wx.Frame):
         self._load_more_label = "Load more items (Enter)"
         self._loading_label = "Loading more..."
         
-        # Create independent player window
-        self.player_window = PlayerFrame(self, config_manager)
+        # Create player window lazily to keep startup fast.
+        self.player_window = None
 
         # Custom hold-to-repeat for media keys (prevents multi-seek on quick tap)
         self._media_hotkeys = HoldRepeatHotkeys(self, hold_delay_s=2.0, repeat_interval_s=0.12, poll_interval_ms=15)
@@ -89,7 +89,7 @@ class MainFrame(wx.Frame):
         self.refresh_feeds()
         wx.CallAfter(self._focus_default_control)
         wx.CallLater(15000, self._maybe_auto_check_updates)
-        wx.CallAfter(self._check_media_dependencies)
+        wx.CallLater(4000, self._check_media_dependencies)
 
     def _check_media_dependencies(self):
         try:
@@ -187,6 +187,63 @@ class MainFrame(wx.Frame):
             self.tree.SetFocus()
         except Exception:
             pass
+
+    def _ensure_player_window(self):
+        pw = getattr(self, "player_window", None)
+        if pw:
+            return pw
+        try:
+            pw = PlayerFrame(self, self.config_manager)
+        except Exception:
+            log.exception("Failed to create player window")
+            return None
+        self.player_window = pw
+        return pw
+
+    def _capture_unread_snapshot(self):
+        snapshot = {}
+        try:
+            for fid, feed in (self.feed_map or {}).items():
+                try:
+                    snapshot[str(fid)] = int(getattr(feed, "unread_count", 0) or 0)
+                except Exception:
+                    snapshot[str(fid)] = 0
+        except Exception:
+            pass
+        return snapshot
+
+    def _extract_new_items(self, state, unread_snapshot, seen_ids):
+        if not isinstance(state, dict):
+            return 0
+        feed_id = state.get("id")
+        if feed_id is None:
+            return 0
+        feed_id = str(feed_id)
+        if seen_ids is not None:
+            if feed_id in seen_ids:
+                return 0
+            seen_ids.add(feed_id)
+
+        new_items = state.get("new_items")
+        if new_items is not None:
+            try:
+                return max(0, int(new_items))
+            except Exception:
+                return 0
+
+        try:
+            unread_now = int(state.get("unread_count") or 0)
+        except Exception:
+            unread_now = 0
+        if unread_snapshot:
+            try:
+                unread_before = int(unread_snapshot.get(feed_id, 0) or 0)
+            except Exception:
+                unread_before = 0
+            delta = unread_now - unread_before
+            if delta > 0:
+                return delta
+        return 0
 
     def _ensure_view_state(self, view_id: str):
         """Return a mutable cache dict for a view, creating it if needed.
@@ -599,12 +656,22 @@ class MainFrame(wx.Frame):
 
     def _refresh_single_feed_thread(self, feed_id):
         try:
+            unread_snapshot = self._capture_unread_snapshot()
+            new_items_total = 0
+            seen_ids = set()
+
+            def progress_cb(state):
+                nonlocal new_items_total
+                new_items_total += self._extract_new_items(state, unread_snapshot, seen_ids)
+                self._on_feed_refresh_progress(state)
+
             # Re-use the existing progress callback mechanism
-            self.provider.refresh_feed(feed_id, progress_cb=self._on_feed_refresh_progress)
+            self.provider.refresh_feed(feed_id, progress_cb=progress_cb)
             wx.CallAfter(self._flush_feed_refresh_progress) # Ensure it flushes immediately
             # We don't need to call refresh_feeds() (full tree rebuild) if we just updated one feed.
             # The progress callback updates the tree item label.
-            self._play_sound("sound_refresh_complete")
+            if new_items_total > 0:
+                self._play_sound("sound_refresh_complete")
         except Exception as e:
             print(f"Single feed refresh error: {e}")
             self._play_sound("sound_refresh_error")
@@ -619,9 +686,19 @@ class MainFrame(wx.Frame):
         if not acquired:
             return False
         try:
-            if self.provider.refresh(self._on_feed_refresh_progress, force=force):
+            unread_snapshot = self._capture_unread_snapshot()
+            new_items_total = 0
+            seen_ids = set()
+
+            def progress_cb(state):
+                nonlocal new_items_total
+                new_items_total += self._extract_new_items(state, unread_snapshot, seen_ids)
+                self._on_feed_refresh_progress(state)
+
+            if self.provider.refresh(progress_cb, force=force):
                 wx.CallAfter(self.refresh_feeds)
-            self._play_sound("sound_refresh_complete")
+            if new_items_total > 0:
+                self._play_sound("sound_refresh_complete")
             return True
         except Exception as e:
             print(f"Refresh error: {e}")
@@ -2540,7 +2617,7 @@ class MainFrame(wx.Frame):
           - False: hide
           - None: toggle
         """
-        pw = getattr(self, "player_window", None)
+        pw = self._ensure_player_window()
         if not pw:
             return
         try:
@@ -2642,8 +2719,11 @@ class MainFrame(wx.Frame):
                 # Use cached chapters if available
                 chapters = getattr(article, "chapters", None)
                 
+                pw = self._ensure_player_window()
+                if not pw:
+                    return
                 # Start playback immediately (avoid blocking)
-                self.player_window.load_media(media_url, use_ytdlp, chapters, title=getattr(article, "title", None))
+                pw.load_media(media_url, use_ytdlp, chapters, title=getattr(article, "title", None))
 
                 # Respect the preference for showing/hiding the player on playback
                 if bool(self.config_manager.get("show_player_on_play", True)):
@@ -2702,7 +2782,9 @@ class MainFrame(wx.Frame):
             pass
 
         try:
-            self.player_window.update_chapters(chapters)
+            pw = getattr(self, "player_window", None)
+            if pw:
+                pw.update_chapters(chapters)
         except Exception:
             pass
 
@@ -3056,7 +3138,9 @@ class MainFrame(wx.Frame):
             # Apply playback speed immediately if the player exists
             if "playback_speed" in data:
                 try:
-                    self.player_window.set_playback_speed(data["playback_speed"])
+                    pw = getattr(self, "player_window", None)
+                    if pw:
+                        pw.set_playback_speed(data["playback_speed"])
                 except Exception:
                     pass
 
