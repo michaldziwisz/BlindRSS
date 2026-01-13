@@ -277,6 +277,8 @@ class PlayerFrame(wx.Frame):
         self._silence_skip_last_ts = 0.0
         self._silence_skip_last_target_ms = None
         self._silence_skip_last_seek_ts = 0.0
+        self._silence_skip_floor_ms = 0
+        self._silence_skip_reset_floor = False
         
         # Playback speed handling
         self.playback_speed = float(self.config_manager.get("playback_speed", 1.0))
@@ -420,6 +422,7 @@ class PlayerFrame(wx.Frame):
             # User-initiated seeks should override any pending auto-resume seek.
             if getattr(self, "_resume_restore_inflight", False) and getattr(self, "_pending_resume_seek_ms", None) is not None:
                 self._reset_auto_resume_state()
+            self._silence_skip_reset_floor = True
         except Exception:
             log.exception("Error resetting resume state on user seek")
 
@@ -1071,6 +1074,8 @@ class PlayerFrame(wx.Frame):
         self._silence_skip_last_idx = None
         self._silence_skip_last_target_ms = None
         self._silence_skip_last_seek_ts = 0.0
+        self._silence_skip_floor_ms = 0
+        self._silence_skip_reset_floor = False
 
     def _start_silence_scan(self, url: str, load_seq: int, headers: dict = None) -> None:
         if not self.config_manager.get("skip_silence", False):
@@ -1139,6 +1144,16 @@ class PlayerFrame(wx.Frame):
             return
         if self.is_casting:
             return
+        try:
+            if getattr(self, "_pending_resume_seek_ms", None) is not None:
+                return
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "_resume_restore_inflight", False)):
+                return
+        except Exception:
+            pass
         if not bool(getattr(self, "_silence_scan_ready", False)):
             return
         if not getattr(self, "_silence_ranges", None):
@@ -1168,6 +1183,14 @@ class PlayerFrame(wx.Frame):
 
         # 2. Increase cushion past silence (2000ms for remote)
         resume_backoff = 2000 if is_remote else 800
+        try:
+            retrigger_backoff = int(self.config_manager.get("silence_skip_retrigger_backoff_ms", 1400) or 1400)
+        except Exception:
+            retrigger_backoff = 1400
+        try:
+            floor = int(getattr(self, "_silence_skip_floor_ms", 0) or 0)
+        except Exception:
+            floor = 0
         
         for idx, (start, end) in enumerate(self._silence_ranges):
             if pos_ms < start - 1000:
@@ -1177,6 +1200,8 @@ class PlayerFrame(wx.Frame):
             # If we are currently inside a silent span...
             if start - 100 <= pos_ms <= end - 100:
                 target_ms = int(end) + resume_backoff
+                if int(target_ms) < int(floor):
+                    return
                 
                 # 3. Robust landing verification:
                 # If we just tried to jump to this exact target, don't loop!
@@ -1706,6 +1731,35 @@ class PlayerFrame(wx.Frame):
             self._pos_ms = int(ui_cur)
             self._pos_ts = float(now_mono)
             self._last_vlc_time_ms = int(ui_cur)
+        except Exception:
+            pass
+
+        try:
+            if bool(getattr(self, "_silence_skip_reset_floor", False)):
+                self._silence_skip_floor_ms = int(ui_cur)
+                self._silence_skip_reset_floor = False
+            else:
+                try:
+                    allow_back = float(getattr(self, "_pos_allow_backwards_until_ts", 0.0) or 0.0)
+                except Exception:
+                    allow_back = 0.0
+                seek_floor = None
+                try:
+                    if recent_seek_target is not None and (now_mono - float(recent_seek_ts)) < 8.0:
+                        seek_floor = int(recent_seek_target)
+                except Exception:
+                    seek_floor = None
+                if now_mono < allow_back:
+                    self._silence_skip_floor_ms = int(ui_cur)
+                else:
+                    floor = int(getattr(self, "_silence_skip_floor_ms", 0) or 0)
+                    candidate = int(floor)
+                    if seek_floor is not None and int(seek_floor) > int(candidate):
+                        candidate = int(seek_floor)
+                    if int(ui_cur) > int(candidate):
+                        candidate = int(ui_cur)
+                    if int(candidate) != int(floor):
+                        self._silence_skip_floor_ms = int(candidate)
         except Exception:
             pass
 
