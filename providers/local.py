@@ -65,6 +65,16 @@ def _is_foreign_key_error(error: Exception) -> bool:
     return "foreign key" in msg
 
 
+def _rollback_and_abort_on_foreign_key(conn: sqlite3.Connection, error: Exception) -> bool:
+    if not _is_foreign_key_error(error):
+        return False
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    return True
+
+
 class LocalProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -282,11 +292,7 @@ class LocalProvider(RSSProvider):
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
                         except Exception as e:
-                            if _is_foreign_key_error(e):
-                                try:
-                                    conn.rollback()
-                                except Exception:
-                                    pass
+                            if _rollback_and_abort_on_foreign_key(conn, e):
                                 return
                             log.debug(f"Odysee entry parse/insert failed for {feed_url}: {e}")
                             continue
@@ -424,11 +430,7 @@ class LocalProvider(RSSProvider):
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
                         except Exception as e:
-                            if _is_foreign_key_error(e):
-                                try:
-                                    conn.rollback()
-                                except Exception:
-                                    pass
+                            if _rollback_and_abort_on_foreign_key(conn, e):
                                 return
                             log.debug(f"Rumble entry parse/insert failed for {feed_url}: {e}")
                             continue
@@ -647,13 +649,9 @@ class LocalProvider(RSSProvider):
                         )
                         new_items += 1
                     except sqlite3.IntegrityError as e:
-                        if _is_foreign_key_error(e):
+                        if _rollback_and_abort_on_foreign_key(conn, e):
                             status = "deleted"
                             error_msg = None
-                            try:
-                                conn.rollback()
-                            except Exception:
-                                pass
                             return
                         raise
 
@@ -1124,13 +1122,13 @@ class LocalProvider(RSSProvider):
                       -- URLs associated with the feed being deleted.
                       urls_to_delete AS (
                         SELECT url AS id FROM articles WHERE feed_id = ? AND url IS NOT NULL AND url != ''
-                        UNION
+                        UNION ALL
                         SELECT media_url AS id FROM articles WHERE feed_id = ? AND media_url IS NOT NULL AND media_url != ''
                       ),
                       -- URLs still referenced by other feeds.
                       retained_urls AS (
                         SELECT url AS id FROM articles WHERE feed_id != ? AND url IS NOT NULL AND url != ''
-                        UNION
+                        UNION ALL
                         SELECT media_url AS id FROM articles WHERE feed_id != ? AND media_url IS NOT NULL AND media_url != ''
                       )
                     DELETE FROM playback_state

@@ -3114,17 +3114,21 @@ class MainFrame(wx.Frame):
         if not success:
             # Deletion did not happen - don't force-selection to a neighbor.
             self._selection_hint = None
-            msg = "Could not remove feed."
+            parts = []
             if feed_title:
-                msg = f"Could not remove feed '{feed_title}'."
+                parts.append(f"Could not remove feed '{feed_title}'.")
+            else:
+                parts.append("Could not remove feed.")
+
             if error_message:
                 low = str(error_message).lower()
                 if "locked" in low or "busy" in low:
-                    msg = f"{msg} It may be busy due to another operation."
+                    parts.append("It may be busy due to another operation.")
                 else:
-                    msg = f"{msg}\n\nError: {error_message}"
-            msg = f"{msg}\n\nPlease try again."
-            wx.MessageBox(msg, "Error", wx.ICON_ERROR)
+                    parts.append(f"Error: {error_message}")
+
+            parts.append("Please try again.")
+            wx.MessageBox("\n\n".join(parts), "Error", wx.ICON_ERROR)
             return
 
         # Underlying DB rows changed significantly; drop view caches to avoid stale entries.
