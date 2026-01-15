@@ -291,9 +291,12 @@ class LocalProvider(RSSProvider):
 
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
-                        except Exception as e:
+                        except sqlite3.IntegrityError as e:
                             if _rollback_and_abort_on_foreign_key(conn, e):
                                 return
+                            log.debug(f"Odysee entry parse/insert failed for {feed_url}: {e}")
+                            continue
+                        except Exception as e:
                             log.debug(f"Odysee entry parse/insert failed for {feed_url}: {e}")
                             continue
                 finally:
@@ -429,9 +432,12 @@ class LocalProvider(RSSProvider):
 
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
-                        except Exception as e:
+                        except sqlite3.IntegrityError as e:
                             if _rollback_and_abort_on_foreign_key(conn, e):
                                 return
+                            log.debug(f"Rumble entry parse/insert failed for {feed_url}: {e}")
+                            continue
+                        except Exception as e:
                             log.debug(f"Rumble entry parse/insert failed for {feed_url}: {e}")
                             continue
                 finally:
