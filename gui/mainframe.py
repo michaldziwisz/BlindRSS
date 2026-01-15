@@ -1364,28 +1364,26 @@ class MainFrame(wx.Frame):
         category_deleted = True
         category_error = None
         try:
-            # Avoid colliding with refresh writes (can block up to busy_timeout).
-            with self._refresh_guard:
-                for fid in (feed_ids or []):
-                    try:
-                        if not self.provider.remove_feed(fid):
-                            failed.append(fid)
-                    except Exception:
-                        log.warning(
-                            "Failed to remove feed %s while deleting category '%s'",
-                            fid,
-                            cat_title,
-                            exc_info=True,
-                        )
-                        failed.append(fid)
+            for fid in (feed_ids or []):
                 try:
-                    category_deleted = bool(self.provider.delete_category(cat_title))
-                    if not category_deleted:
-                        category_error = None
-                except Exception as e:
-                    category_deleted = False
-                    category_error = str(e) or type(e).__name__
-                    log.exception("Failed to delete category '%s'", cat_title)
+                    if not self.provider.remove_feed(fid):
+                        failed.append(fid)
+                except Exception:
+                    log.warning(
+                        "Failed to remove feed %s while deleting category '%s'",
+                        fid,
+                        cat_title,
+                        exc_info=True,
+                    )
+                    failed.append(fid)
+            try:
+                category_deleted = bool(self.provider.delete_category(cat_title))
+                if not category_deleted:
+                    category_error = None
+            except Exception as e:
+                category_deleted = False
+                category_error = str(e) or type(e).__name__
+                log.exception("Failed to delete category '%s'", cat_title)
         finally:
             wx.CallAfter(
                 self._post_delete_category_with_feeds,
@@ -3104,9 +3102,7 @@ class MainFrame(wx.Frame):
         success = False
         error_message = None
         try:
-            # Avoid colliding with refresh writes (can block up to busy_timeout and freeze the UI).
-            with self._refresh_guard:
-                success = bool(self.provider.remove_feed(feed_id))
+            success = bool(self.provider.remove_feed(feed_id))
         except Exception as e:
             log.exception("Error removing feed %s", feed_id)
             error_message = str(e) or type(e).__name__

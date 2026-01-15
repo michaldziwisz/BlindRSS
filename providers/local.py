@@ -49,6 +49,22 @@ def _is_locked_error(error: Exception) -> bool:
     msg = str(error).lower()
     return "locked" in msg or "busy" in msg
 
+
+def _is_foreign_key_error(error: Exception) -> bool:
+    if not isinstance(error, sqlite3.IntegrityError):
+        return False
+
+    code = getattr(error, "sqlite_errorcode", None)
+    if code is not None:
+        try:
+            return int(code) == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+        except (TypeError, ValueError):
+            pass
+
+    msg = str(error).lower()
+    return "foreign key" in msg
+
+
 class LocalProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -227,6 +243,9 @@ class LocalProvider(RSSProvider):
                 conn = get_connection()
                 try:
                     c = conn.cursor()
+                    c.execute("SELECT 1 FROM feeds WHERE id = ? LIMIT 1", (feed_id,))
+                    if not c.fetchone():
+                        return
                     c.execute(
                         "UPDATE feeds SET title = ?, etag = ?, last_modified = ? WHERE id = ?",
                         (final_title, None, None, feed_id),
@@ -263,6 +282,12 @@ class LocalProvider(RSSProvider):
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
                         except Exception as e:
+                            if _is_foreign_key_error(e):
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                return
                             log.debug(f"Odysee entry parse/insert failed for {feed_url}: {e}")
                             continue
                 finally:
@@ -359,6 +384,9 @@ class LocalProvider(RSSProvider):
                 conn = get_connection()
                 try:
                     c = conn.cursor()
+                    c.execute("SELECT 1 FROM feeds WHERE id = ? LIMIT 1", (feed_id,))
+                    if not c.fetchone():
+                        return
                     # Clear conditional-cache metadata (HTML listing refresh does not use ETag/Last-Modified)
                     c.execute(
                         "UPDATE feeds SET title = ?, etag = ?, last_modified = ? WHERE id = ?",
@@ -396,6 +424,12 @@ class LocalProvider(RSSProvider):
                             if i % 5 == 0 or i == total_entries - 1:
                                 conn.commit()
                         except Exception as e:
+                            if _is_foreign_key_error(e):
+                                try:
+                                    conn.rollback()
+                                except Exception:
+                                    pass
+                                return
                             log.debug(f"Rumble entry parse/insert failed for {feed_url}: {e}")
                             continue
                 finally:
@@ -482,6 +516,9 @@ class LocalProvider(RSSProvider):
             conn = get_connection()
             try:
                 c = conn.cursor()
+                c.execute("SELECT 1 FROM feeds WHERE id = ? LIMIT 1", (feed_id,))
+                if not c.fetchone():
+                    return
                 
                 final_title = d.feed.get('title', final_title)
                 c.execute("UPDATE feeds SET title = ?, etag = ?, last_modified = ? WHERE id = ?", 
@@ -603,10 +640,23 @@ class LocalProvider(RSSProvider):
                     if not media_url and npr_mod.is_npr_url(url):
                         media_url, media_type = npr_mod.extract_npr_audio(url, timeout_s=feed_timeout)
 
-                    c.execute("INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
-                                (article_id, feed_id, title, url, content, date, author, media_url, media_type))
-                    new_items += 1
-                    
+                    try:
+                        c.execute(
+                            "INSERT INTO articles (id, feed_id, title, url, content, date, author, is_read, media_url, media_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                            (article_id, feed_id, title, url, content, date, author, media_url, media_type),
+                        )
+                        new_items += 1
+                    except sqlite3.IntegrityError as e:
+                        if _is_foreign_key_error(e):
+                            status = "deleted"
+                            error_msg = None
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            return
+                        raise
+
                     chapter_url = None
                     if 'podcast_chapters' in entry:
                         chapters_tag = entry.podcast_chapters
