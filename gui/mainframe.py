@@ -1306,16 +1306,18 @@ class MainFrame(wx.Frame):
     def _delete_category_with_feeds_thread(self, cat_title: str, feed_ids: list[str]):
         failed = []
         try:
-            for fid in list(feed_ids or []):
-                try:
-                    if not self.provider.remove_feed(fid):
+            # Avoid colliding with refresh writes (can block up to busy_timeout).
+            with self._refresh_guard:
+                for fid in list(feed_ids or []):
+                    try:
+                        if not self.provider.remove_feed(fid):
+                            failed.append(fid)
+                    except Exception:
                         failed.append(fid)
+                try:
+                    self.provider.delete_category(cat_title)
                 except Exception:
-                    failed.append(fid)
-            try:
-                self.provider.delete_category(cat_title)
-            except Exception:
-                pass
+                    pass
         finally:
             wx.CallAfter(self._post_delete_category_with_feeds, cat_title, failed)
 
@@ -2982,6 +2984,8 @@ class MainFrame(wx.Frame):
             data = self.tree.GetItemData(item)
             if data and data["type"] == "feed":
                 if wx.MessageBox("Are you sure you want to remove this feed?", "Confirm", wx.YES_NO) == wx.YES:
+                    feed_id = data.get("id")
+                    feed_title = self._get_feed_title(feed_id) if feed_id else None
                     # Logic to find the "next" best item to focus (alphabetical neighbor)
                     # Try next sibling first, then previous sibling
                     next_item = self.tree.GetNextSibling(item)
@@ -2996,8 +3000,47 @@ class MainFrame(wx.Frame):
                         if parent.IsOk():
                             self._selection_hint = self.tree.GetItemData(parent)
 
-                    self.provider.remove_feed(data["id"])
-                    self.refresh_feeds()
+                    if feed_title:
+                        self.SetTitle(f"BlindRSS - Removing feed {feed_title}...")
+                    else:
+                        self.SetTitle("BlindRSS - Removing feed...")
+                    threading.Thread(
+                        target=self._remove_feed_thread,
+                        args=(feed_id, feed_title),
+                        daemon=True,
+                    ).start()
+
+    def _remove_feed_thread(self, feed_id: str, feed_title: str | None = None) -> None:
+        success = False
+        try:
+            # Avoid colliding with refresh writes (can block up to busy_timeout and freeze the UI).
+            with self._refresh_guard:
+                success = bool(self.provider.remove_feed(feed_id))
+        except Exception:
+            log.exception("Error removing feed %s", feed_id)
+            success = False
+        wx.CallAfter(self._post_remove_feed, feed_id, feed_title, success)
+
+    def _post_remove_feed(self, feed_id: str, feed_title: str | None, success: bool) -> None:
+        self.SetTitle("BlindRSS")
+
+        if not success:
+            # Deletion did not happen - don't force-selection to a neighbor.
+            self._selection_hint = None
+            msg = "Could not remove feed."
+            if feed_title:
+                msg = f"Could not remove feed '{feed_title}'. It may be busy due to a refresh.\n\nPlease try again."
+            wx.MessageBox(msg, "Error", wx.ICON_ERROR)
+            return
+
+        # Underlying DB rows changed significantly; drop view caches to avoid stale entries.
+        try:
+            with self._view_cache_lock:
+                self.view_cache.clear()
+        except Exception:
+            pass
+
+        self.refresh_feeds()
 
     def on_edit_feed(self, event):
         item = self.tree.GetSelection()

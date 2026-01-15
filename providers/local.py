@@ -32,6 +32,23 @@ _REFRESH_WORKERS_PER_CPU_MULTIPLIER = 2
 _REFRESH_PER_HOST_MIN_CAP = 2
 _REFRESH_PER_HOST_MAX_CAP = 8
 
+_REMOVE_FEED_BUSY_TIMEOUT_MS = 5000
+
+
+def _is_locked_error(error: Exception) -> bool:
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+
+    code = getattr(error, "sqlite_errorcode", None)
+    if code is not None:
+        try:
+            return int(code) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+        except (TypeError, ValueError):
+            pass
+
+    msg = str(error).lower()
+    return "locked" in msg or "busy" in msg
+
 class LocalProvider(RSSProvider):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
@@ -1030,13 +1047,60 @@ class LocalProvider(RSSProvider):
             conn.close()
 
     def remove_feed(self, feed_id: str) -> bool:
+        if not feed_id:
+            return False
+
         conn = get_connection()
         try:
+            try:
+                # Don't hang the UI for up to busy_timeout when a refresh is writing.
+                conn.execute(f"PRAGMA busy_timeout={int(_REMOVE_FEED_BUSY_TIMEOUT_MS)}")
+            except sqlite3.Error:
+                pass
+
             c = conn.cursor()
-            c.execute("DELETE FROM articles WHERE feed_id = ?", (feed_id,))
-            c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
-            conn.commit()
-            return True
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                # Remove playback state for the feed's articles (both article:<id> and URL-based keys).
+                c.execute(
+                    "DELETE FROM playback_state WHERE id IN (SELECT 'article:' || id FROM articles WHERE feed_id = ?)",
+                    (feed_id,),
+                )
+                c.execute(
+                    "DELETE FROM playback_state WHERE id IN (SELECT url FROM articles WHERE feed_id = ? AND url IS NOT NULL AND url != '')",
+                    (feed_id,),
+                )
+                c.execute(
+                    "DELETE FROM playback_state WHERE id IN (SELECT media_url FROM articles WHERE feed_id = ? AND media_url IS NOT NULL AND media_url != '')",
+                    (feed_id,),
+                )
+
+                # Remove dependent chapter rows before deleting articles.
+                c.execute(
+                    "DELETE FROM chapters WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)",
+                    (feed_id,),
+                )
+                c.execute("DELETE FROM articles WHERE feed_id = ?", (feed_id,))
+                c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+                removed = int(c.rowcount or 0)
+                conn.commit()
+                return removed > 0
+            except sqlite3.OperationalError as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if _is_locked_error(e):
+                    log.warning("Database locked while removing feed %s", feed_id)
+                    return False
+                raise
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                log.error("Remove feed error: %s", e)
+                return False
         finally:
             conn.close()
 
