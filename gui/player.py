@@ -196,6 +196,7 @@ class PlayerFrame(wx.Frame):
         self.current_chapters = []
         self.chapter_marks = []
         self.current_url = None
+        self.current_article_id = None
         self._load_seq = 0
         self._active_load_seq = 0
         self.current_title = "No Track Loaded"
@@ -912,7 +913,13 @@ class PlayerFrame(wx.Frame):
                 self._pending_resume_seek_ms = max(0, int(cast_pos_ms))
                 self._pending_resume_seek_attempts = 0
                 self._pending_resume_paused = (not cast_was_playing)
-                self.load_media(self.current_url, is_youtube=False, chapters=self.current_chapters)
+                self.load_media(
+                    self.current_url,
+                    use_ytdlp=False,
+                    chapters=self.current_chapters,
+                    title=self.current_title,
+                    article_id=getattr(self, "current_article_id", None),
+                )
                 self._cast_handoff_source_url = None
             return
 
@@ -1363,7 +1370,7 @@ class PlayerFrame(wx.Frame):
             print(f"DEBUG: _maybe_range_cache_url exception: {e}")
             return url
 
-    def load_media(self, url, use_ytdlp=False, chapters=None, title=None):
+    def load_media(self, url, use_ytdlp=False, chapters=None, title=None, article_id=None):
         if not self.initialized and not self.is_casting:
             wx.MessageBox("VLC is not initialized. Playback is unavailable.", "Error", wx.OK | wx.ICON_ERROR)
             return
@@ -1371,6 +1378,15 @@ class PlayerFrame(wx.Frame):
         print(f"DEBUG: load_media url={url}, is_casting={self.is_casting}")
         if not url:
             return
+
+        try:
+            if article_id is not None:
+                self.current_article_id = str(article_id)
+            else:
+                self.current_article_id = None
+        except Exception as e:
+            log.exception("Error updating current_article_id: %s", e)
+            self.current_article_id = None
 
         # Persist the previous item's position before switching to the new one.
         try:
@@ -2155,6 +2171,25 @@ class PlayerFrame(wx.Frame):
 
     def has_media_loaded(self) -> bool:
         return bool(getattr(self, "current_url", None))
+
+    def is_current_media(self, article_id: object | None, media_url: str | None) -> bool:
+        """Returns True if the given article_id/media_url matches what's currently loaded."""
+        try:
+            if not self.has_media_loaded():
+                return False
+
+            cur_id = getattr(self, "current_article_id", None)
+            if cur_id is not None and article_id is not None and str(cur_id) == str(article_id):
+                return True
+
+            cur_url = getattr(self, "current_url", None)
+            if cur_url and media_url and str(cur_url) == str(media_url):
+                return True
+        except Exception as e:
+            log.exception("Error checking if media is current: %s", e)
+            return False
+
+        return False
 
     def is_audio_playing(self) -> bool:
         """Return True only when audio is actively playing."""
