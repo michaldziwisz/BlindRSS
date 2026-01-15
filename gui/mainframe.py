@@ -36,6 +36,9 @@ class MainFrame(wx.Frame):
         self.provider = provider
         self.config_manager = config_manager
         self._refresh_guard = threading.Lock()
+        # Critical background workers (e.g., destructive DB ops) we may want to wait for during shutdown.
+        self._critical_workers_lock = threading.Lock()
+        self._critical_workers = set()
         self.feed_map = {}
         self.feed_nodes = {}
         self._article_refresh_pending = False
@@ -755,6 +758,17 @@ class MainFrame(wx.Frame):
         self.stop_event.set()
         if self.refresh_thread.is_alive():
             self.refresh_thread.join(timeout=1)
+        # Give critical background workers a brief chance to finish cleanly.
+        try:
+            with self._critical_workers_lock:
+                critical = [t for t in self._critical_workers if t and t.is_alive()]
+            for t in critical:
+                try:
+                    t.join(timeout=5)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self.Destroy()
 
     def on_iconize(self, event):
@@ -1297,11 +1311,23 @@ class MainFrame(wx.Frame):
             return
 
         self._selection_hint = {"type": "all", "id": "all"}
-        threading.Thread(
-            target=self._delete_category_with_feeds_thread,
-            args=(cat_title, feed_ids),
-            daemon=True,
-        ).start()
+        def _worker():
+            try:
+                self._delete_category_with_feeds_thread(cat_title, feed_ids)
+            finally:
+                try:
+                    with self._critical_workers_lock:
+                        self._critical_workers.discard(threading.current_thread())
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_worker, daemon=True)
+        try:
+            with self._critical_workers_lock:
+                self._critical_workers.add(t)
+        except Exception:
+            pass
+        t.start()
 
     def _delete_category_with_feeds_thread(self, cat_title: str, feed_ids: list[str]):
         failed = []
@@ -3010,11 +3036,23 @@ class MainFrame(wx.Frame):
                         self.SetTitle(f"BlindRSS - Removing feed {feed_title}...")
                     else:
                         self.SetTitle("BlindRSS - Removing feed...")
-                    threading.Thread(
-                        target=self._remove_feed_thread,
-                        args=(feed_id, feed_title),
-                        daemon=True,
-                    ).start()
+                    def _worker():
+                        try:
+                            self._remove_feed_thread(feed_id, feed_title)
+                        finally:
+                            try:
+                                with self._critical_workers_lock:
+                                    self._critical_workers.discard(threading.current_thread())
+                            except Exception:
+                                pass
+
+                    t = threading.Thread(target=_worker, daemon=True)
+                    try:
+                        with self._critical_workers_lock:
+                            self._critical_workers.add(t)
+                    except Exception:
+                        pass
+                    t.start()
 
     def _remove_feed_thread(self, feed_id: str, feed_title: str | None = None) -> None:
         success = False
