@@ -1308,7 +1308,7 @@ class MainFrame(wx.Frame):
         try:
             # Avoid colliding with refresh writes (can block up to busy_timeout).
             with self._refresh_guard:
-                for fid in list(feed_ids or []):
+                for fid in (feed_ids or []):
                     try:
                         if not self.provider.remove_feed(fid):
                             failed.append(fid)
