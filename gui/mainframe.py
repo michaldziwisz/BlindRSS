@@ -94,6 +94,46 @@ class MainFrame(wx.Frame):
         wx.CallLater(15000, self._maybe_auto_check_updates)
         wx.CallLater(4000, self._check_media_dependencies)
 
+    def _start_critical_worker(self, target, args=(), *, name: str | None = None) -> None:
+        """Start a tracked daemon thread for critical operations (e.g. destructive DB work).
+
+        These threads are allowed to run in the background, but during shutdown we will try to
+        join them briefly to reduce the chance of terminating mid-operation.
+        """
+
+        def _worker():
+            try:
+                target(*args)
+            finally:
+                try:
+                    with self._critical_workers_lock:
+                        self._critical_workers.discard(threading.current_thread())
+                except Exception:
+                    log.debug("Failed to unregister critical worker thread", exc_info=True)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        if name:
+            try:
+                t.name = str(name)
+            except Exception:
+                pass
+
+        try:
+            with self._critical_workers_lock:
+                self._critical_workers.add(t)
+        except Exception:
+            log.debug("Failed to register critical worker thread", exc_info=True)
+
+        try:
+            t.start()
+        except Exception:
+            log.exception("Failed to start critical worker thread")
+            try:
+                with self._critical_workers_lock:
+                    self._critical_workers.discard(t)
+            except Exception:
+                log.debug("Failed to unregister critical worker thread after start failure", exc_info=True)
+
     def _check_media_dependencies(self):
         try:
             missing_vlc, missing_ffmpeg = dependency_check.check_media_tools_status()
@@ -759,16 +799,18 @@ class MainFrame(wx.Frame):
         if self.refresh_thread.is_alive():
             self.refresh_thread.join(timeout=1)
         # Give critical background workers a brief chance to finish cleanly.
+        critical = []
         try:
             with self._critical_workers_lock:
                 critical = [t for t in self._critical_workers if t and t.is_alive()]
-            for t in critical:
-                try:
-                    t.join(timeout=5)
-                except Exception:
-                    pass
         except Exception:
-            pass
+            log.debug("Failed to snapshot critical worker threads on shutdown", exc_info=True)
+
+        for t in critical:
+            try:
+                t.join(timeout=5)
+            except Exception:
+                log.debug("Failed to join critical worker thread on shutdown", exc_info=True)
         self.Destroy()
 
     def on_iconize(self, event):
@@ -1311,23 +1353,11 @@ class MainFrame(wx.Frame):
             return
 
         self._selection_hint = {"type": "all", "id": "all"}
-        def _worker():
-            try:
-                self._delete_category_with_feeds_thread(cat_title, feed_ids)
-            finally:
-                try:
-                    with self._critical_workers_lock:
-                        self._critical_workers.discard(threading.current_thread())
-                except Exception:
-                    pass
-
-        t = threading.Thread(target=_worker, daemon=True)
-        try:
-            with self._critical_workers_lock:
-                self._critical_workers.add(t)
-        except Exception:
-            pass
-        t.start()
+        self._start_critical_worker(
+            self._delete_category_with_feeds_thread,
+            args=(cat_title, feed_ids),
+            name="delete_category_with_feeds",
+        )
 
     def _delete_category_with_feeds_thread(self, cat_title: str, feed_ids: list[str]):
         failed = []
@@ -3036,23 +3066,11 @@ class MainFrame(wx.Frame):
                         self.SetTitle(f"BlindRSS - Removing feed {feed_title}...")
                     else:
                         self.SetTitle("BlindRSS - Removing feed...")
-                    def _worker():
-                        try:
-                            self._remove_feed_thread(feed_id, feed_title)
-                        finally:
-                            try:
-                                with self._critical_workers_lock:
-                                    self._critical_workers.discard(threading.current_thread())
-                            except Exception:
-                                pass
-
-                    t = threading.Thread(target=_worker, daemon=True)
-                    try:
-                        with self._critical_workers_lock:
-                            self._critical_workers.add(t)
-                    except Exception:
-                        pass
-                    t.start()
+                    self._start_critical_worker(
+                        self._remove_feed_thread,
+                        args=(feed_id, feed_title),
+                        name="remove_feed",
+                    )
 
     def _remove_feed_thread(self, feed_id: str, feed_title: str | None = None) -> None:
         success = False
