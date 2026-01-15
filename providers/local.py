@@ -1129,19 +1129,20 @@ class LocalProvider(RSSProvider):
                     SELECT url AS id FROM articles WHERE feed_id = ? AND url IS NOT NULL AND url != ''
                     UNION ALL
                     SELECT media_url AS id FROM articles WHERE feed_id = ? AND media_url IS NOT NULL AND media_url != ''
-                  ),
-                  -- URLs still referenced by other feeds.
-                  retained_urls AS (
-                    SELECT url AS id FROM articles WHERE feed_id != ? AND url IS NOT NULL AND url != ''
-                    UNION ALL
-                    SELECT media_url AS id FROM articles WHERE feed_id != ? AND media_url IS NOT NULL AND media_url != ''
                   )
                 DELETE FROM playback_state
                 WHERE
                   id IN (SELECT id FROM urls_to_delete)
-                  AND id NOT IN (SELECT id FROM retained_urls)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM articles
+                    WHERE feed_id != ?
+                      AND (
+                        (articles.url IS NOT NULL AND articles.url != '' AND articles.url = playback_state.id)
+                        OR (articles.media_url IS NOT NULL AND articles.media_url != '' AND articles.media_url = playback_state.id)
+                      )
+                  )
                 """,
-                (feed_id, feed_id, feed_id, feed_id),
+                (feed_id, feed_id, feed_id),
             )
 
             # Remove dependent chapter rows before deleting articles.

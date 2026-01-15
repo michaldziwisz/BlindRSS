@@ -105,34 +105,20 @@ class MainFrame(wx.Frame):
             try:
                 target(*args)
             finally:
-                try:
-                    with self._critical_workers_lock:
-                        self._critical_workers.discard(threading.current_thread())
-                except Exception:
-                    log.debug("Failed to unregister critical worker thread", exc_info=True)
+                with self._critical_workers_lock:
+                    self._critical_workers.discard(threading.current_thread())
 
-        t = threading.Thread(target=_worker, daemon=True)
-        if name:
-            try:
-                t.name = str(name)
-            except Exception:
-                pass
+        t = threading.Thread(target=_worker, daemon=True, name=str(name) if name else None)
 
-        try:
-            with self._critical_workers_lock:
-                self._critical_workers.add(t)
-        except Exception:
-            log.debug("Failed to register critical worker thread", exc_info=True)
+        with self._critical_workers_lock:
+            self._critical_workers.add(t)
 
         try:
             t.start()
         except Exception:
             log.exception("Failed to start critical worker thread")
-            try:
-                with self._critical_workers_lock:
-                    self._critical_workers.discard(t)
-            except Exception:
-                log.debug("Failed to unregister critical worker thread after start failure", exc_info=True)
+            with self._critical_workers_lock:
+                self._critical_workers.discard(t)
 
     def _check_media_dependencies(self):
         try:
