@@ -1107,64 +1107,63 @@ class LocalProvider(RSSProvider):
                 pass
 
             c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            # Remove playback state for the feed's articles.
+            # - Article ID based keys are safe to delete (unique per article).
+            # - URL based keys may be shared across feeds; delete only when the URL isn't used elsewhere.
+            c.execute(
+                "DELETE FROM playback_state WHERE id IN (SELECT 'article:' || id FROM articles WHERE feed_id = ?)",
+                (feed_id,),
+            )
+            c.execute(
+                """
+                WITH
+                  -- URLs associated with the feed being deleted.
+                  urls_to_delete AS (
+                    SELECT url AS id FROM articles WHERE feed_id = ? AND url IS NOT NULL AND url != ''
+                    UNION ALL
+                    SELECT media_url AS id FROM articles WHERE feed_id = ? AND media_url IS NOT NULL AND media_url != ''
+                  ),
+                  -- URLs still referenced by other feeds.
+                  retained_urls AS (
+                    SELECT url AS id FROM articles WHERE feed_id != ? AND url IS NOT NULL AND url != ''
+                    UNION ALL
+                    SELECT media_url AS id FROM articles WHERE feed_id != ? AND media_url IS NOT NULL AND media_url != ''
+                  )
+                DELETE FROM playback_state
+                WHERE
+                  id IN (SELECT id FROM urls_to_delete)
+                  AND id NOT IN (SELECT id FROM retained_urls)
+                """,
+                (feed_id, feed_id, feed_id, feed_id),
+            )
+
+            # Remove dependent chapter rows before deleting articles.
+            c.execute(
+                "DELETE FROM chapters WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)",
+                (feed_id,),
+            )
+            c.execute("DELETE FROM articles WHERE feed_id = ?", (feed_id,))
+            c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
+            removed = int(c.rowcount or 0)
+            conn.commit()
+            return removed > 0
+        except Exception as e:
             try:
-                c.execute("BEGIN IMMEDIATE")
-                # Remove playback state for the feed's articles.
-                # - Article ID based keys are safe to delete (unique per article).
-                # - URL based keys may be shared across feeds; delete only when the URL isn't used elsewhere.
-                c.execute(
-                    "DELETE FROM playback_state WHERE id IN (SELECT 'article:' || id FROM articles WHERE feed_id = ?)",
-                    (feed_id,),
-                )
-                c.execute(
-                    """
-                    WITH
-                      -- URLs associated with the feed being deleted.
-                      urls_to_delete AS (
-                        SELECT url AS id FROM articles WHERE feed_id = ? AND url IS NOT NULL AND url != ''
-                        UNION ALL
-                        SELECT media_url AS id FROM articles WHERE feed_id = ? AND media_url IS NOT NULL AND media_url != ''
-                      ),
-                      -- URLs still referenced by other feeds.
-                      retained_urls AS (
-                        SELECT url AS id FROM articles WHERE feed_id != ? AND url IS NOT NULL AND url != ''
-                        UNION ALL
-                        SELECT media_url AS id FROM articles WHERE feed_id != ? AND media_url IS NOT NULL AND media_url != ''
-                      )
-                    DELETE FROM playback_state
-                    WHERE
-                      id IN (SELECT id FROM urls_to_delete)
-                      AND id NOT IN (SELECT id FROM retained_urls)
-                    """,
-                    (feed_id, feed_id, feed_id, feed_id),
+                conn.rollback()
+            except Exception:
+                log.debug(
+                    "Error during database rollback while removing feed %s",
+                    feed_id,
+                    exc_info=True,
                 )
 
-                # Remove dependent chapter rows before deleting articles.
-                c.execute(
-                    "DELETE FROM chapters WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)",
-                    (feed_id,),
-                )
-                c.execute("DELETE FROM articles WHERE feed_id = ?", (feed_id,))
-                c.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
-                removed = int(c.rowcount or 0)
-                conn.commit()
-                return removed > 0
-            except Exception as e:
-                try:
-                    conn.rollback()
-                except Exception:
-                    log.debug(
-                        "Error during database rollback while removing feed %s",
-                        feed_id,
-                        exc_info=True,
-                    )
+            if _is_locked_error(e):
+                log.warning("Database locked while removing feed %s", feed_id, exc_info=True)
+            else:
+                log.exception("Error removing feed %s", feed_id)
 
-                if _is_locked_error(e):
-                    log.warning("Database locked while removing feed %s", feed_id, exc_info=True)
-                else:
-                    log.exception("Error removing feed %s", feed_id)
-
-                return False
+            raise
         finally:
             conn.close()
 
