@@ -1317,7 +1317,7 @@ class MainFrame(wx.Frame):
                 try:
                     self.provider.delete_category(cat_title)
                 except Exception:
-                    pass
+                    log.exception("Failed to delete category '%s'", cat_title)
         finally:
             wx.CallAfter(self._post_delete_category_with_feeds, cat_title, failed)
 
@@ -3038,7 +3038,7 @@ class MainFrame(wx.Frame):
             with self._view_cache_lock:
                 self.view_cache.clear()
         except Exception:
-            pass
+            log.exception("Failed to clear view cache after feed removal")
 
         self.refresh_feeds()
 
